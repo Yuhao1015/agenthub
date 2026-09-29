@@ -1,0 +1,110 @@
+# Portable example only. Copy to capability_matrix.yaml and customize locally.
+agents:
+  cc-sonnet:
+    kind: claude_code
+    model: sonnet
+    allowed_tools: Read,Edit,Write,Bash
+    animal: corgi
+    blurb: 日常写代码的默认选择，速度和质量平衡得最好
+  cc-sonnet-mgr:
+    kind: claude_code
+    model: sonnet
+    allowed_tools: Read
+    animal: hedgehog
+  cc-opus:
+    kind: claude_code
+    model: claude-opus-4-6
+    allowed_tools: Read
+    animal: owl
+    blurb: 最强推理，适合拆解复杂目标和做架构判断；订阅额度消耗大
+  codex-local:
+    kind: codex
+    animal: robot
+    blurb: 复用 ChatGPT 登录的 Codex CLI；适合在 Claude 额度不足时继续完成编码、规划和审查
+  cc-glm-strong:
+    kind: codebuddy
+    model: glm-5.2
+    animal: fox
+  cc-kimi:
+    kind: codebuddy
+    model: kimi-k2.7
+    specialty: frontend
+    animal: otter
+    blurb: 前端专精，写页面和交互比通用模型顺手
+  cc-minimax:
+    kind: codebuddy
+    model: minimax-m3
+    specialty: multimodal
+    animal: koala
+  cc-hy3:
+    kind: codebuddy
+    model: hy3
+    animal: raccoon
+  cc-deepseek-cb:
+    kind: codebuddy
+    model: deepseek-v4-flash
+    animal: squirrel
+  or-deepseek:
+    kind: openrouter
+    model: deepseek/deepseek-chat
+    animal: whale
+  or-glm:
+    kind: openrouter
+    model: z-ai/glm-4.6
+    animal: panda
+  or-cheap:
+    kind: openrouter
+    model: google/gemini-2.5-flash-lite
+    animal: hamster
+  or-nemotron:
+    kind: openrouter
+    model: nvidia/nemotron-3-ultra-550b-a55b:free
+    animal: llama
+  dsh-pro:
+    kind: dsh
+    model: deepseek-v4-pro
+    animal: dragon
+    blurb: 全权 agent，自带工具和 skills，适合整块交给它的任务
+  dsh-flash:
+    kind: dsh
+    model: deepseek-v4-flash
+    animal: axolotl
+  mock:
+    kind: mock
+    animal: robot
+routes:
+  planning:
+  - cc-opus
+  - cc-sonnet
+  - codex-local
+  - cc-glm-strong
+  coding:
+  - cc-sonnet
+  - codex-local
+  - or-deepseek
+  - or-glm
+  - dsh-pro
+  review:
+  - cc-sonnet
+  - codex-local
+  - cc-glm-strong
+  manager:
+  - cc-sonnet-mgr
+  - cc-kimi
+  image:
+  - mock
+tiers:
+  strong:
+  - cc-opus
+  - cc-glm-strong
+  mid:
+  - cc-sonnet
+  - cc-kimi
+  - cc-minimax
+  economy:
+  - cc-hy3
+  - cc-deepseek-cb
+budget:
+  max_usd_per_run: 2.0
+  max_attempts_per_task: 2
+  awaiting_input_timeout_sec: 600

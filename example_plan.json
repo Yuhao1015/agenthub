@@ -1,0 +1,33 @@
+{
+  "goal": "Design and scaffold a landing page for the pixel-art Agent Hub",
+  "tasks": [
+    {
+      "id": "arch",
+      "title": "Architecture & tech stack decision",
+      "type": "planning",
+      "prompt": "Propose a minimal tech stack and file structure for a single-page landing site (static, no backend). Output: a short markdown spec with file list and section layout.",
+      "depends_on": []
+    },
+    {
+      "id": "copy",
+      "title": "Write landing page copy",
+      "type": "writing",
+      "prompt": "Write concise landing page copy (hero headline, 3 feature blurbs, CTA) for 'Agent Hub' — a pixel-art multi-agent orchestration dashboard. Tone: playful Y2K retro. Output plain markdown.",
+      "depends_on": []
+    },
+    {
+      "id": "code",
+      "title": "Build index.html",
+      "type": "coding",
+      "prompt": "Create a single self-contained index.html implementing the spec and copy from context. Pixel-art Y2K style via CSS only (no external assets). Write the file to disk as index.html and reply with a summary of what you built.",
+      "depends_on": ["arch", "copy"]
+    },
+    {
+      "id": "qa",
+      "title": "Review the deliverable",
+      "type": "review",
+      "prompt": "Review the upstream outputs: does the built page match the spec and copy? List any gaps as bullet points, then give a verdict line: PASS or FAIL with reason.",
+      "depends_on": ["arch", "copy", "code"]
+    }
+  ]
+}

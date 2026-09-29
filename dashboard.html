@@ -1,0 +1,2103 @@
+<!DOCTYPE html>
+<html lang="zh" data-theme="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Agent Hub</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;800&family=Press+Start+2P&display=swap" rel="stylesheet">
+<script src="https://unpkg.com/lucide@0.428.0/dist/umd/lucide.min.js"></script>
+<style>
+:root[data-theme="dark"]{
+  --bg:#191817; --surface:#201f1e; --surface2:#2a2827; --raise:#302e2d;
+  --ink:#f0eeec; --dim:#a19d99; --line:#343130; --hair:#2c2a29;
+  --accent:#ff563c; --accent-ink:#201e1d; --accent-tint:rgba(255,86,60,.13);
+  --office-bg:#241f42; --tile-a:#282250; --tile-b:#241f42; --bubble:#2a2827;
+  --dots:#4a4745; --shadow:0 18px 44px rgba(0,0,0,.5);
+}
+:root[data-theme="light"]{
+  --bg:#faf9f8; --surface:#f3f2f2; --surface2:#e9e7e6; --raise:#ffffff;
+  --ink:#201e1d; --dim:#6b6764; --line:#e0dedb; --hair:#eae8e6;
+  --accent:#ec3013; --accent-ink:#ffffff; --accent-tint:rgba(236,48,19,.09);
+  --office-bg:#e9e6f5; --tile-a:#dfdaf0; --tile-b:#e9e6f5; --bubble:#eeecea;
+  --dots:#cfcbc7; --shadow:0 18px 44px rgba(45,43,43,.16);
+}
+*{box-sizing:border-box;margin:0;padding:0}
+[hidden]{display:none!important}
+html,body{height:100%}
+body{background:var(--bg);color:var(--ink);font-family:Archivo,-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;
+  font-size:14px;overflow:hidden;-webkit-font-smoothing:antialiased}
+button{font:inherit;color:inherit;background:none;border:none;cursor:pointer}
+textarea{font:inherit;color:inherit}
+canvas{image-rendering:pixelated}
+a{color:var(--accent)}a:hover{color:var(--ink)}
+button:focus-visible,textarea:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+[data-lucide]{width:15px;height:15px;stroke-width:1.75}
+@keyframes pulse{50%{opacity:.35}}
+@keyframes slidein{from{transform:translateX(18px);opacity:0}to{transform:translateX(0);opacity:1}}
+@media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+::-webkit-scrollbar{width:9px}::-webkit-scrollbar-thumb{background:var(--line);border-radius:9px}
+::-webkit-scrollbar-track{background:transparent}
+
+#app{display:grid;grid-template-columns:232px 1fr;height:100%}
+
+/* ---------- sidebar ---------- */
+#side{background:var(--surface);border-right:1px solid var(--hair);display:flex;flex-direction:column;min-height:0}
+#side-head{padding:14px 12px 10px;display:flex;flex-direction:column;gap:10px}
+.brand{display:flex;align-items:center;gap:9px;padding:0 4px}
+.brand i{width:13px;height:13px;border-radius:4px;background:var(--accent);display:block}
+.brand span{font-family:'Press Start 2P';font-size:8.5px;line-height:1.4}
+#new-btn{display:flex;align-items:center;gap:8px;padding:8px 10px;border-radius:9px;
+  border:1px solid var(--line);font-weight:500;font-size:13.5px;text-align:left}
+#new-btn:hover{background:var(--surface2)}
+#new-btn [data-lucide]{color:var(--accent)}
+#side-label{font-size:11.5px;color:var(--dim);padding:10px 16px 6px}
+#sessions{flex:1;overflow-y:auto;min-height:0;display:flex;flex-direction:column;gap:1px;padding:0 8px}
+.sess{text-align:left;padding:7px 9px;border-radius:8px;color:var(--dim);display:flex;flex-direction:column;gap:3px}
+.sess:hover{background:var(--surface2);color:var(--ink)}
+.sess.active{background:var(--surface2);color:var(--ink)}
+.sess .row{display:flex;align-items:center;gap:7px;width:100%}
+.sess .s-title{font-size:13px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.sess .s-meta{font-size:11px;color:var(--dim);padding-left:13px;display:none}
+.sess.active .s-meta{display:block}
+.dot{width:6px;height:6px;border-radius:50%;flex:none;background:var(--dots)}
+.dot.running{background:var(--accent);animation:pulse 1.1s steps(2) infinite}
+.dot.done{background:var(--dots)}
+.dot.failed{background:transparent;border:1.5px solid var(--accent)}
+.dot.cancelled{background:transparent;border:1.5px solid var(--accent)}
+#side-foot{padding:12px 16px 14px;display:flex;flex-direction:column;gap:6px;border-top:1px solid var(--hair)}
+#side-foot .b-row{display:flex;justify-content:space-between;font-size:11.5px;color:var(--dim)}
+.bar{height:5px;border-radius:999px;background:var(--surface2);overflow:hidden}
+.bar>i{display:block;height:100%;background:var(--accent);border-radius:999px}
+
+/* ---------- main ---------- */
+#main{display:flex;flex-direction:column;min-width:0;min-height:0;position:relative;overflow:hidden;background:var(--bg)}
+#topbar{flex:none;height:40px;display:flex;align-items:center;gap:12px;padding:0 14px;
+  background:var(--surface);border-bottom:1px solid var(--hair)}
+#topbar .title{font-size:12.5px;color:var(--dim)}
+#mode-btn{display:flex;align-items:center;gap:6px;font-size:11.5px;color:var(--dim);
+  padding:3px 9px;border-radius:999px;background:var(--surface2)}
+#mode-btn .dot{background:var(--accent);animation:pulse 1.1s steps(2) infinite}
+/* LIVE 但连不上 serve.py：必须显眼，否则服务端挂了界面看起来一切正常，
+   用户只有在发任务失败的那一刻才知道（见 pollLive 的注释） */
+#mode-btn.down{background:var(--accent);color:var(--accent-ink);font-weight:600}
+#mode-btn.down .dot{background:var(--accent-ink);animation:none}
+#settings-btn{display:flex;align-items:center;font-size:11.5px;color:var(--dim);
+  padding:3px 9px;border-radius:999px;background:var(--surface2);text-decoration:none}
+#settings-btn:hover{color:var(--ink)}
+#theme-btn{width:28px;height:28px;border-radius:8px;display:flex;align-items:center;justify-content:center;color:var(--dim)}
+#theme-btn:hover{background:var(--surface2);color:var(--ink)}
+
+#strip{flex:none;background:var(--surface);border-bottom:1px solid var(--hair)}
+#strip-head{display:flex;align-items:center;height:46px;padding:0 12px;gap:6px}
+.segs{display:flex;gap:3px;padding:3px;border-radius:10px;background:var(--surface2)}
+.seg{padding:5px 11px;border-radius:7px;color:var(--dim);font-weight:500;font-size:12.5px;
+  display:flex;align-items:center;gap:6px}
+.seg.on{color:var(--ink);background:var(--raise);font-weight:600;box-shadow:0 1px 2px rgba(0,0,0,.10)}
+#run-tag{display:flex;align-items:center;gap:7px;font-size:12px;color:var(--dim)}
+#strip-toggle{display:flex;align-items:center;gap:6px;padding:5px 10px;border-radius:8px;color:var(--dim);font-size:12px;font-weight:500}
+#strip-toggle:hover{background:var(--surface2);color:var(--ink)}
+#strip-body{height:246px;display:flex;min-height:0;padding:0 12px 12px}
+#strip.collapsed #strip-body{display:none}
+.pane{flex:1;min-width:0;border:1px solid var(--line);border-radius:12px;overflow:hidden;background:var(--surface);display:none}
+.pane.on{display:flex}
+
+#office{flex:1;min-width:0;height:234px;display:block;cursor:pointer;background:var(--office-bg)}
+#roster{width:228px;flex:none;border-left:1px solid var(--hair);padding:12px 14px;
+  display:flex;flex-direction:column;gap:10px;overflow-y:auto;background:var(--surface)}
+#roster .r-label{font-size:11.5px;color:var(--dim)}
+.r-row{display:flex;align-items:center;gap:9px;font-size:12.5px;cursor:pointer}
+.r-row canvas{width:18px;height:18px;flex:none}
+.r-row .n{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.r-row .s{color:var(--accent)}
+.r-row .s.idle{color:var(--dim)}
+#roster .hint{margin-top:auto;font-size:11px;color:var(--dim);line-height:1.5}
+
+#dag-pane{overflow:auto;padding:16px 18px}
+/* 布局定义只此一份：renderDag() 会给传进来的任何容器加 .dag-grid，
+   仪表区和对话里的门卡片因此自动保持一致 */
+.dag-grid{display:grid;gap:12px 32px;align-items:start;position:relative;min-width:0}
+.node{text-align:left;background:var(--raise);border:1px solid var(--line);border-radius:10px;
+  padding:9px 12px;height:64px;display:flex;flex-direction:column;gap:2px;min-width:0}
+.node:hover{border-color:var(--accent)}
+.node .k{font-size:10.5px;color:var(--dim)}
+.node .t{font-size:13px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.node .m{font-size:11px;color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.node.running{border-color:var(--accent)}.node.running .k{color:var(--accent)}
+.node.failed{background:var(--accent-tint);border-color:var(--accent)}.node.failed .k{color:var(--accent)}
+.node.pending{background:transparent;border-style:dashed;color:var(--dim)}
+.node.pick{cursor:pointer}
+.node.pick:hover{border-color:var(--ink)}
+.node .pin{display:block;font-size:10.5px;color:var(--dim);margin-top:2px}
+.dag-grid svg{position:absolute;inset:0;overflow:visible;pointer-events:none;color:var(--ink)}
+
+#cost-pane{grid-template-columns:1fr 1fr;overflow-y:auto}
+#cost-pane.on{display:grid}
+#cost-left{padding:16px 18px;border-right:1px solid var(--hair);display:flex;flex-direction:column;gap:14px}
+#cost-total{display:flex;align-items:baseline;gap:10px}
+#cost-total b{font-weight:800;font-size:30px;letter-spacing:-.02em}
+#cost-total span{font-size:12px;color:var(--dim)}
+.note[hidden]{display:none}
+.note{border:1px solid var(--accent);border-radius:10px;padding:10px 12px;display:flex;gap:10px;
+  align-items:flex-start;background:var(--accent-tint);font-size:12px;line-height:1.55}
+.note [data-lucide]{color:var(--accent);flex:none;margin-top:2px}
+#cost-right{padding:16px 18px;display:flex;flex-direction:column;gap:9px}
+#by-agent{display:grid;grid-template-columns:1fr 60px 60px;gap:7px 10px;font-size:12.5px;align-items:center}
+#by-agent .v{color:var(--dim);text-align:right}
+#by-agent .b{height:6px;border-radius:999px;background:var(--line);display:block}
+#by-agent .b.hi{background:var(--accent)}
+
+/* ---------- chat ---------- */
+#chat-scroll{flex:1;min-height:0;overflow-y:auto;background:var(--bg)}
+#chat{max-width:720px;margin:0 auto;padding:26px 24px 8px;display:flex;flex-direction:column;gap:22px}
+.msg{display:flex;gap:12px}
+.msg.user{flex-direction:row-reverse}
+.msg .av{width:28px;height:28px;flex:none;border-radius:50%;background:var(--surface2);
+  display:flex;align-items:center;justify-content:center;overflow:hidden;font-size:11.5px;font-weight:600;color:var(--dim)}
+.msg .av canvas{width:22px;height:22px}
+.msg .body{flex:1;min-width:0;display:flex;flex-direction:column;gap:8px}
+.msg.user .body{align-items:flex-end}
+.msg .who{font-size:11.5px;color:var(--dim)}
+.msg .text{font-size:14.5px;line-height:1.7;white-space:pre-wrap;word-break:break-word;text-wrap:pretty}
+.msg.user .text{background:var(--bubble);border-radius:14px;padding:10px 14px;max-width:88%}
+.typing{animation:pulse .8s steps(2) infinite;color:var(--dim)}
+.card{border:1px solid var(--line);border-radius:12px;background:var(--surface);padding:12px 14px;
+  display:flex;flex-direction:column;gap:10px;align-self:stretch}
+.card.alert{border-color:var(--accent);background:var(--accent-tint)}
+.card .c-head{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--dim)}
+.card .c-head [data-lucide]{color:var(--accent)}
+.card .mono{font-size:12.5px;line-height:1.55;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--dim)}
+.chips{display:flex;flex-wrap:wrap;gap:6px}
+.chip{font-size:11.5px;padding:3px 10px;border-radius:999px;background:var(--surface2)}
+.chip.dim{color:var(--dim)}
+.mprog{margin-top:6px;display:flex;flex-direction:column;gap:3px}
+.mprog .st{display:flex;gap:7px;align-items:baseline;font-size:11.5px;color:var(--dim)}
+.mprog .st .d{color:var(--ink);opacity:.75}
+.mprog .st .el{margin-left:auto;font-variant-numeric:tabular-nums;opacity:.6}
+.mprog .st.cur .d{opacity:1}
+.qbox{margin-top:8px}
+.qbox .qt{font-size:12.5px;color:var(--ink);margin:8px 0 5px}
+.qbox .opts{display:flex;flex-wrap:wrap;gap:6px}
+.qbox .opt{padding:5px 10px;font-size:11.5px;border:1px solid var(--hair);
+  border-radius:999px;background:transparent;color:var(--dim);cursor:pointer;text-align:left}
+.qbox .opt:hover{color:var(--ink);border-color:var(--ink)}
+.qbox .opt.on{color:var(--ink);border-color:var(--ink);background:rgba(255,255,255,.06)}
+.qbox .opt[disabled]{cursor:default;opacity:.75}
+.agent-picker .opt{display:flex;align-items:center;gap:7px;text-align:left}
+.qbox .other-in{margin-top:6px;width:100%;padding:5px 9px;font-size:11.5px;
+  background:transparent;color:var(--ink);border:1px solid var(--hair);border-radius:6px}
+.qbox .qd{font-size:11px;color:var(--dim);margin-top:3px}
+.acts{display:flex;flex-wrap:wrap;gap:8px}
+.btn{display:flex;align-items:center;gap:6px;padding:7px 12px;border-radius:8px;
+  background:var(--raise);border:1px solid var(--line);font-weight:500;font-size:12.5px}
+.btn:hover{background:var(--surface2)}
+.btn.primary{background:var(--accent);color:var(--accent-ink);border-color:transparent;font-weight:600}
+.btn.primary:hover{opacity:.88;background:var(--accent)}
+.btn.ghost{background:transparent}
+.card>.btn{align-self:flex-start}
+#chat-empty{color:var(--dim);text-align:center;padding:48px 20px;line-height:2}
+#chat-empty .px{font-family:'Press Start 2P';font-size:10px;color:var(--ink)}
+
+/* ---------- input ---------- */
+#input-bar{flex:none;background:var(--bg);padding:10px 24px 16px}
+#input-inner{max-width:720px;margin:0 auto;display:flex;flex-direction:column;gap:8px}
+#run-bar{display:flex;gap:8px;align-items:center;padding:0 4px;flex-wrap:wrap}
+#run-bar .chip{display:inline-flex;align-items:center;gap:5px;padding:4px 9px;
+  font-size:11.5px;color:var(--dim);background:transparent;border:1px solid var(--hair);
+  border-radius:999px;cursor:pointer}
+#run-bar .chip:hover{color:var(--ink);border-color:var(--ink)}
+#run-bar .sw{padding:4px 8px;font-size:11.5px;background:transparent;
+  color:var(--dim);border:1px solid var(--hair);border-radius:999px;cursor:pointer}
+#run-bar .sw:hover{color:var(--ink)}
+#run-bar .sw option{background:var(--surface);color:var(--ink)}
+#run-bar .manager-warning{padding:3px 7px;font-size:10.5px;color:#e6a06a;
+  border:1px solid rgba(230,160,106,.4);border-radius:999px;white-space:nowrap}
+#run-bar input{flex:1;min-width:180px;padding:5px 9px;font-size:11.5px;
+  background:transparent;color:var(--ink);border:1px solid var(--hair);border-radius:6px}
+#run-bar .btn{padding:5px 10px;font-size:11.5px}
+.gate-note{font-size:11px;color:var(--dim);margin-top:6px;line-height:1.5}
+#input-box{display:flex;gap:10px;align-items:flex-end;background:var(--raise);border:1px solid var(--line);
+  border-radius:20px;padding:10px 10px 10px 16px;box-shadow:0 2px 10px rgba(0,0,0,.06)}
+#input-box:focus-within{border-color:var(--accent)}
+#prompt{flex:1;background:none;border:none;outline:none;resize:none;max-height:120px;
+  line-height:1.6;font-size:14.5px;padding:4px 0}
+#send{width:30px;height:30px;flex:none;border-radius:50%;background:var(--accent);color:var(--accent-ink);
+  display:flex;align-items:center;justify-content:center}
+#send:hover{opacity:.88}
+#send:disabled{opacity:.4;cursor:default}
+#input-foot{display:flex;gap:14px;font-size:11px;color:var(--dim);padding:0 4px}
+#input-hint{color:var(--accent)}
+
+/* ---------- drawer ---------- */
+#drawer-wrap{position:absolute;inset:0;display:none;justify-content:flex-end;pointer-events:none;z-index:5}
+#drawer-wrap.on{display:flex}
+#drawer{position:relative;width:440px;max-width:100%;pointer-events:auto;background:var(--surface);
+  border-left:1px solid var(--line);border-radius:16px 0 0 16px;box-shadow:var(--shadow);
+  display:flex;flex-direction:column;animation:slidein .16s ease-out}
+#d-head{flex:none;padding:14px 16px;border-bottom:1px solid var(--hair);display:flex;gap:12px;align-items:flex-start}
+#d-head .col{flex:1;min-width:0;display:flex;flex-direction:column;gap:4px}
+#d-kicker{font-size:11.5px;color:var(--accent)}
+#d-title{font-weight:600;font-size:18px;letter-spacing:-.01em}
+#d-meta{font-size:11.5px;color:var(--dim)}
+#d-close{width:28px;height:28px;flex:none;border-radius:8px;color:var(--dim);display:flex;align-items:center;justify-content:center}
+#d-close:hover{background:var(--surface2);color:var(--ink)}
+#d-body{flex:1;min-height:0;overflow-y:auto;padding:16px;display:flex;flex-direction:column;gap:18px}
+.d-sec{display:flex;flex-direction:column;gap:8px}
+.d-sec .lab{font-size:11.5px;color:var(--dim)}
+.d-out{border:1px solid var(--line);border-radius:10px;background:var(--bg);padding:12px;
+  font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12.5px;line-height:1.65;white-space:pre-wrap;word-break:break-word}
+.d-log{display:grid;grid-template-columns:52px 1fr;gap:10px;padding:7px 0;border-bottom:1px solid var(--hair);
+  font-size:12.5px;line-height:1.5}
+.d-log .ts{color:var(--dim);font-family:ui-monospace,Menlo,monospace;font-size:11.5px}
+.d-log b{font-weight:600}
+.d-board{display:flex;gap:8px;align-items:baseline;font-size:12.5px;padding:6px 0;border-bottom:1px solid var(--hair)}
+.d-board .k{font-family:ui-monospace,Menlo,monospace;font-size:11.5px;color:var(--accent)}
+.d-board .v{color:var(--dim);min-width:0;word-break:break-word}
+#d-foot{flex:none;border-top:1px solid var(--hair);padding:12px 16px;display:flex;gap:8px;flex-wrap:wrap}
+
+/* deliverable file rows (drawer + run-finished card) */
+.f-row{display:flex;gap:9px;align-items:center;width:100%;padding:8px 10px;border:1px solid var(--line);
+  border-radius:9px;background:var(--bg);font-size:12.5px;text-align:left;color:var(--ink)}
+.f-row+.f-row{margin-top:6px}
+.f-row:hover{border-color:var(--accent);background:var(--surface2)}
+.f-row .n{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+  font-family:ui-monospace,Menlo,monospace;font-size:12px}
+.f-row .s{flex:none;color:var(--dim);font-size:11.5px}
+.f-row i{flex:none;width:15px;height:15px;color:var(--dim)}
+
+/* file preview panel — sits over the task drawer (wider, higher z) */
+#pv-wrap{position:absolute;inset:0;display:none;justify-content:flex-end;pointer-events:none;z-index:6}
+#pv-wrap.on{display:flex}
+#pv{position:relative;width:min(760px,92%);pointer-events:auto;background:var(--surface);
+  border-left:1px solid var(--line);border-radius:16px 0 0 16px;box-shadow:var(--shadow);
+  display:flex;flex-direction:column;animation:slidein .16s ease-out}
+#pv-head{flex:none;padding:12px 14px;border-bottom:1px solid var(--hair);display:flex;gap:10px;align-items:center}
+#pv-head .col{flex:1;min-width:0;display:flex;flex-direction:column;gap:3px}
+#pv-kicker{font-size:11.5px;color:var(--accent)}
+#pv-title{font-weight:600;font-size:14.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+  font-family:ui-monospace,Menlo,monospace}
+#pv-close{width:28px;height:28px;flex:none;border-radius:8px;color:var(--dim);display:flex;align-items:center;justify-content:center}
+#pv-close:hover{background:var(--surface2);color:var(--ink)}
+#pv-body{flex:1;min-height:0;overflow:auto;background:var(--bg)}
+#pv-body iframe{width:100%;height:100%;border:0;background:#fff}
+#pv-body img{display:block;max-width:100%;margin:0 auto}
+.pv-pad{padding:16px}
+.pv-txt{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12.5px;line-height:1.65;
+  white-space:pre-wrap;word-break:break-word}
+.pv-md{font-size:14px;line-height:1.75}
+.pv-md h1,.pv-md h2,.pv-md h3,.pv-md h4{margin:18px 0 8px;line-height:1.35}
+.pv-md h1{font-size:21px}.pv-md h2{font-size:18px}.pv-md h3{font-size:15.5px}.pv-md h4{font-size:14px}
+.pv-md p{margin:9px 0}.pv-md ul,.pv-md ol{margin:9px 0;padding-left:22px}.pv-md li{margin:3px 0}
+.pv-md hr{border:0;border-top:1px solid var(--hair);margin:16px 0}
+.pv-md a{color:var(--accent);text-decoration:underline}
+.pv-md blockquote{margin:9px 0;padding:2px 0 2px 12px;border-left:2px solid var(--line);color:var(--dim)}
+.pv-md code{font-family:ui-monospace,Menlo,monospace;font-size:12.5px;background:var(--surface2);
+  padding:1px 5px;border-radius:5px}
+.pv-code{font-family:ui-monospace,Menlo,monospace;font-size:12.5px;line-height:1.6;background:var(--surface2);
+  border:1px solid var(--hair);border-radius:9px;padding:11px 12px;overflow-x:auto;margin:10px 0}
+.pv-note{padding:36px 20px;text-align:center;color:var(--dim);font-size:13px;line-height:1.8}
+.pv-note b{display:block;color:var(--ink);font-size:14.5px;margin-bottom:6px;font-weight:600}
+
+@media(max-width:900px){
+  #app{grid-template-columns:1fr}#side{display:none}
+  #strip-body{height:auto;flex-direction:column}#office{height:200px}
+  #cost-pane{grid-template-columns:1fr}#drawer{width:100%;border-radius:0}
+  #pv{width:100%;border-radius:0}
+}
+</style>
+</head>
+<body>
+<div id="app">
+  <aside id="side">
+    <div id="side-head">
+      <div class="brand"><i></i><span>AGENT HUB</span></div>
+      <button id="new-btn"><i data-lucide="plus"></i>新目标</button>
+    </div>
+    <div id="side-label">运行历史</div>
+    <nav id="sessions"></nav>
+    <div id="side-foot">
+      <div class="b-row"><span>累计花费</span><span id="budget-text">$0.00</span></div>
+      <div class="bar"><i id="budget-bar" style="width:0%"></i></div>
+      <div style="font-size:10.5px;color:var(--dim);line-height:1.45">护栏 $2.00 仅限 openrouter 按量付费；订阅/积分不计入</div>
+    </div>
+  </aside>
+
+  <main id="main">
+    <div id="topbar">
+      <div class="title">Agent Hub — 调度中心</div>
+      <div style="margin-left:auto;display:flex;align-items:center;gap:8px">
+        <button id="mode-btn"><span class="dot"></span><span id="mode-label">LIVE</span></button>
+        <a id="settings-btn" href="settings.html" title="设置">设置</a>
+        <button id="theme-btn" title="切换主题"><i data-lucide="contrast"></i></button>
+      </div>
+    </div>
+
+    <section id="strip">
+      <div id="strip-head">
+        <div class="segs">
+          <button class="seg on" data-tab="office"><i data-lucide="users"></i>办公室</button>
+          <button class="seg" data-tab="dag"><i data-lucide="git-fork"></i>依赖图</button>
+          <button class="seg" data-tab="cost"><i data-lucide="circle-dollar-sign"></i>成本</button>
+        </div>
+        <div style="margin-left:auto;display:flex;align-items:center;gap:10px">
+          <span id="run-tag"><span class="dot"></span><span id="run-text">待命</span></span>
+          <button id="cancel-run" class="btn ghost" hidden><i data-lucide="circle-x"></i>取消</button>
+          <a id="export-run" class="btn ghost" href="/export" download hidden>
+            <i data-lucide="package"></i>导出交付物
+          </a>
+          <button id="strip-toggle"><i data-lucide="chevrons-down-up"></i><span id="strip-label">收起</span></button>
+        </div>
+      </div>
+      <div id="strip-body">
+        <div class="pane on" id="office-pane">
+          <canvas id="office"></canvas>
+          <div id="roster"><div class="r-label">还没有员工入座</div></div>
+        </div>
+        <div class="pane" id="dag-pane"><div id="dag"></div></div>
+        <div class="pane" id="cost-pane">
+          <div id="cost-left">
+            <div id="cost-total"><b id="cost-num">$0.0000</b><span id="cost-sub">本次运行累计</span></div>
+            <div style="display:flex;flex-direction:column;gap:7px">
+              <div class="b-row" style="display:flex;justify-content:space-between;font-size:11.5px;color:var(--dim)">
+                <span id="cost-budget-label">护栏 $2.00 · 仅按量 API</span><span id="cost-pct">0%</span></div>
+              <div class="bar" style="height:8px"><i id="cost-bar" style="width:0%"></i></div>
+              <div style="font-size:11.5px;color:var(--dim)">护栏只统计 openrouter 按量付费；claude_code 订阅与 codebuddy 积分消耗不计入，可能是实际花费大头</div>
+            </div>
+            <div class="note" id="waste-note" hidden><i data-lucide="triangle-alert"></i><div id="waste-text"></div></div>
+          </div>
+          <div id="cost-right">
+            <div style="font-size:11.5px;color:var(--dim)">按 agent 拆分</div>
+            <div id="by-agent"></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <div id="chat-scroll"><div id="chat"></div></div>
+
+    <div id="input-bar"><div id="input-inner">
+      <div id="run-bar">
+        <select id="sw-manager" class="sw" title="谁来跟你讨论想法。独占：选定后不降级">
+          <option value="">经理 · 自动</option>
+        </select>
+        <span id="manager-warning" class="manager-warning" hidden
+              title="经理调用不计入 max_usd_per_run">经理费用不受护栏</span>
+        <select id="sw-assign" class="sw" title="模型分配。手动会强制打开计划门">
+          <option value="auto">模型分配 · 自动</option>
+          <option value="manual">模型分配 · 我来选</option>
+        </select>
+        <select id="sw-gate" class="sw"
+                title="ask = 写盘任务开跑前先问你。定时运行始终走自动模式">
+          <option value="auto">权限 · 自动</option>
+          <option value="ask">权限 · 每步问我</option>
+        </select>
+        <button class="chip" id="wk-chip" title="未配置工作区 · 下次运行生效">
+          <i data-lucide="folder"></i><span id="wk-name">工作区</span>
+        </button>
+        <input id="wk-path" placeholder="粘贴文件夹绝对路径…" hidden>
+        <button class="btn ghost" id="wk-save" hidden>保存</button>
+      </div>
+      <div id="input-box">
+        <textarea id="prompt" rows="1" placeholder="给经理下达目标，或用 @任务id 追问某个 agent…"></textarea>
+        <button id="send" title="发送"><i data-lucide="arrow-up"></i></button>
+      </div>
+      <div id="input-foot"><span>Enter 发送 · Shift+Enter 换行</span>
+        <span id="input-hint"></span>
+        <span style="margin-left:auto">⌘\ 收起仪表区</span></div>
+    </div></div>
+
+    <div id="drawer-wrap"><div id="drawer">
+      <div id="d-head">
+        <div class="col"><div id="d-kicker"></div><div id="d-title"></div><div id="d-meta"></div></div>
+        <button id="d-close"><i data-lucide="x"></i></button>
+      </div>
+      <div id="d-body"></div>
+      <div id="d-foot">
+        <button class="btn primary" id="d-rerun"><i data-lucide="rotate-ccw"></i>重跑此任务</button>
+        <button class="btn" id="d-ask"><i data-lucide="message-circle-more"></i>继续追问</button>
+        <button class="btn" id="d-copy"><i data-lucide="copy"></i>复制产出</button>
+      </div>
+    </div></div>
+
+    <div id="pv-wrap"><div id="pv">
+      <div id="pv-head">
+        <div class="col"><div id="pv-kicker"></div><div id="pv-title"></div></div>
+        <a class="btn" id="pv-dl" download><i data-lucide="download"></i>下载</a>
+        <button id="pv-diff" class="btn ghost" hidden>查看改动 (git)</button>
+        <button id="pv-file" class="btn ghost" hidden>查看文件</button>
+        <button id="pv-close"><i data-lucide="x"></i></button>
+      </div>
+      <div id="pv-body"></div>
+    </div></div>
+  </main>
+</div>
+
+<script>
+"use strict";
+/* =====================================================================
+   AGENT HUB v4 — instrument strip (office / DAG / cost) + manager chat
+   + task drawer. Data contract unchanged: events.jsonl (hub/models.py
+   EventBus); LIVE chat -> POST /chat; task follow-up -> POST
+   /task/{id}/message (hub/conversation.py). DEMO mode when the file
+   can't be read (double-click open).
+   ===================================================================== */
+
+/* ---------- pixel sprites ---------- */
+const PAL={o:"#e8923a",O:"#c46f22",w:"#f5efe6",b:"#1c1430",n:"#3d2b1f",
+  g:"#8d8aa5",G:"#615f78",u:"#3f6fd8",U:"#2c4fa0",p:"#efe8ea",
+  y:"#e7b74a",Y:"#c1913a",r:"#b9bec9",R:"#7d8494",c:"#d9a05b",
+  e:"#101010",W:"#ffffff",h:"#e05252",H:"#a83232"};
+const SPRITES={
+corgi:["............",".O..O..O..O.",".Oo.O..O.oO.",".OooOOOOooO.",".OoooooooO..",".Owweewwo...",".OwweewwO...",".OwwnnwwO...",".OowwwwoO...","..OooooO....","..Oo..oO....","..OO..OO...."],
+owl:["....GG......","...G..G.....",".GGggggGG...",".GgWeWegG...",".GgWeWegG...",".GggyyggG...",".GggggggG...",".GgwgwgwG...",".GggggggG...","..GgggggG...","..yy..yy....","............"],
+whale:["............","......u.....",".....uu.....","..uuuUUuu...",".uuuuuuuuu..","uuWeuuuuuuu.","uuuuuuuuuuU.","uwwwwuuuuU..",".uuuuuuuU...","..UUUUUU....","............","............"],
+panda:[".ee....ee...",".eepppeee...",".pppppppp...",".peeppeep...",".peWppWep...",".ppppnppp...",".pppppppp...",".eeppppee...",".epppppppe..",".eepppppee..","..ee..ee....","............"],
+hamster:["............","..y....y....",".yYy..yYy...",".yyyyyyyy...",".yWeyyeWy...",".yyynnyyy...",".yywwwwyy...",".yyyyyyyy...","..yyyyyy....","..yy..yy....","............","............"],
+robot:[".....W......","....rWr.....","..rrrrrrr...","..rReeRr....","..rreerrr...","..rrrrrrr...","..RrrrrrR...","..r.rrr.r...","..rrrrrrr...","..RR..RR....","............","............"],
+cat:["............",".c......c...",".cc....cc...",".cccccccc...",".cWeccecWc..",".cccnnccc...",".cccccccc...",".cccccccc...","..cccccc....","..cc..cc....","............","............"],
+captain:["..HHHHHH....",".HhhhhhhH...",".O.hhhh..O..",".OooOOOOooO.",".OoooooooO..",".Owweewwo...",".OwweewwO...",".OwwnnwwO...",".OowwwwoO...","..OooooO....","..Oo..oO....","..OO..OO...."]};
+function paintSprite(cv,animal,px){
+  const map=SPRITES[animal]||SPRITES.cat,n=12;
+  cv.width=n*px;cv.height=n*px;
+  const c=cv.getContext("2d");c.imageSmoothingEnabled=false;
+  for(let r=0;r<n;r++)for(let col=0;col<n;col++){
+    const ch=map[r]&&map[r][col];if(!ch||ch===".")continue;
+    c.fillStyle=PAL[ch]||"#fff";c.fillRect(col*px,r*px,px,px);}
+}
+function spriteOn(ctx,animal,x,y,s,bob){
+  const map=SPRITES[animal]||SPRITES.cat;
+  for(let r=0;r<map.length;r++)for(let c=0;c<map[r].length;c++){
+    const ch=map[r][c];if(ch===".")continue;
+    ctx.fillStyle=PAL[ch]||"#fff";ctx.fillRect(x+c*s,y+r*s+(bob||0),s,s);}
+}
+
+/* ---------- state ---------- */
+const BUDGET=2.0;
+const S={sessions:[],activeIdx:-1,followLatest:true,mode:"live",seenBytes:0,
+  theme:"dark",tab:"office",strip:true,drawer:null,busy:false,sendPending:false,
+  pendingGoal:null,chatSession:null,preChat:[],preview:null,notifyAsked:false,
+  pendingChoiceAnswers:null,restoringSessions:true,
+  mgrProgress:[],mgrStart:0,mgrLive:false,
+  pvDiff:false,liveDown:false,workdir:"",agents:[],agentPrecision:"",
+  managerChatsByRun:{}};
+const $=q=>document.querySelector(q);
+// 引号必须一起转义：esc() 的结果有些地方是拼进 HTML 属性值里的
+// （data-copy="…"、value="…" 等），只挡 &<> 的话，一个带 " 的字符串就能
+// 闭合属性再塞进 onmouseover= 之类的事件属性。而这些文本相当一部分是
+// agent/LLM 产出的（目标文案、任务标题、笔记、文件名），按本项目一贯
+// 对 agent 输出的不信任假设（交付物预览的 iframe 连 allow-same-origin
+// 都不给），这里同样不能信。放在文本位置时 &quot; 照样渲染成 "，无副作用。
+const esc=s=>String(s==null?"":s).replace(/[&<>"']/g,
+  c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const fmtTs=ts=>new Date(ts*1000).toTimeString().slice(0,8);
+const nowTs=()=>Date.now()/1000;
+const icons=()=>{try{window.lucide&&window.lucide.createIcons();}catch(_){}};
+try{
+  S.theme=localStorage.getItem("ah_theme")||S.theme;
+  S.tab=localStorage.getItem("ah_tab")||S.tab;
+  S.strip=localStorage.getItem("ah_strip")!=="0";
+}catch(_){}
+
+/* ---------- desktop notifications ---------- */
+function notifySupported(){return typeof Notification!=="undefined";}
+function ensureNotifyPermission(){
+  if(!notifySupported())return;
+  if(S.notifyAsked)return;
+  S.notifyAsked=true;
+  if(Notification.permission!=="default")return;
+  try{Notification.requestPermission();}catch(_){}
+}
+function trunc(s,n){s=String(s==null?"":s);return s.length>n?s.slice(0,n)+"…":s;}
+function notifyRun(title,body){
+  if(!notifySupported())return;
+  if(S.mode!=="live")return;          // DEMO 的假事件不配真通知
+  if(Notification.permission!=="granted")return;
+  if(!document.hidden)return;         // 正盯着标签页时页内消息就是反馈
+  try{
+    const n=new Notification(title,{body:body});
+    n.onclick=()=>{window.focus();n.close();};
+  }catch(_){}
+}
+
+/* ---------- ingest ---------- */
+function ingest(e){
+  if(e.type==="plan_created"){
+    const last=S.sessions[S.sessions.length-1];
+    if(e.restored&&e.restored.length&&last){
+      // 强制重跑（POST /rerun）：同一次 run 的续跑，不是新目标 —— 合并进上一条
+        // 会话，不当新会话 push 一条 —— 判据是 e.restored 非空：只有 /rerun
+        // 才会带它。不这么判的话，侧栏每点一次「重跑」就多出一条幽灵会话。
+      last.events.push(e);
+      last.status="running";
+      const rerunning=e.tasks.filter(t=>!e.restored.includes(t.id)).map(t=>t.title);
+      last.chat.push({role:"manager",ts:e.ts,
+        text:"已重新执行 "+rerunning.length+" 个过期任务："+(rerunning.join("、")||"（无）")+"。"});
+      if(S.followLatest){S.activeIdx=S.sessions.length-1;}
+    }else{
+      S.sessions.push({id:"s"+(S.sessions.length+1),goal:e.goal,events:[e],chat:[],
+        status:"running",startTs:e.ts,runId:S.runId||""});
+      const sess=S.sessions[S.sessions.length-1];
+      if(S.pendingGoal){sess.chat.push({role:"user",text:S.pendingGoal.text,ts:S.pendingGoal.ts});S.pendingGoal=null;}
+      const restored=S.managerChatsByRun[S.runId||""]||null;
+      if(restored){
+        sess.chat.push.apply(sess.chat,restored);
+        delete S.managerChatsByRun[S.runId||""];
+      }else if(S.preChat.length&&!S.chatSession){
+        sess.chat.push.apply(sess.chat,S.preChat);S.preChat=[];
+      }
+      sess.chat.push({role:"manager",ts:e.ts,
+        text:"收到，已立项并拆成 "+e.tasks.length+" 个任务。现在按能力矩阵派单。",
+        card:{kind:"plan",tasks:e.tasks.map(t=>({id:t.id,dep:(t.depends_on||[]).length>0}))}});
+      if(S.followLatest)
+        S.activeIdx=S.chatSession?S.sessions.length:S.sessions.length-1;
+    }
+  }else{
+    const sess=S.sessions[S.sessions.length-1];
+    if(!sess){
+      /* 引擎在发出 plan_created 之前就死了 —— argv 错误、找不到 main.py、
+         import 期异常……这恰恰是最常见的崩溃形态，而此刻还没有任何会话
+         对象。以前这里是一句裸 return，于是用户看到经理说「收到，马上
+         安排开工」之后就是永远的沉默：系统知道出了什么事、也写进了磁盘，
+         但就是不告诉用户。 */
+      if(e.type==="run_crashed"||e.type==="run_cancelled"){
+        const msg=e.type==="run_crashed"
+          ?("引擎还没开始拆解任务就异常退出了（"+(e.error||"未知原因")+"）——"
+            +"本次运行没有产生任何任务。最常见的原因是 Agent Hub 启动之后"
+            +"仓库被移动或改名，正在运行的服务还记着旧路径：先重启 Agent Hub。"
+            +"（体检查的是 agent 装没装，这种情况做体检看不出问题。）")
+          :"这次运行在开始拆解之前就被取消了，没有产生任何任务。";
+        // local:true —— 这行只存在于前端，服务端快照里没有它。经理会话恢复
+        // 是 1Hz 整体替换 preChat 的，不打标记的话这条崩溃说明会被下一个
+        // tick 抹掉，用户又回到 §6.15 修好之前的那种沉默。
+        S.preChat.push({role:"manager",ts:e.ts,text:msg,local:true});
+        hint(e.type==="run_crashed"?"引擎启动失败——详情见对话":"已取消");
+        notifyRun(e.type==="run_crashed"?"Agent Hub · 引擎异常退出"
+                                        :"Agent Hub · 已取消运行",msg);
+        renderAll();
+      }
+      return;
+    }
+    sess.events.push(e);
+    if(e.type==="gate_opened"){
+      const card=e.kind==="plan"
+        ?{kind:"gate-plan",gateId:e.gate_id,agents:e.available_agents||[],
+          gateToken:e.gate_token||"",overrides:{},openPicker:"",frozen:false}
+        :{kind:"gate-task",gateId:e.gate_id,taskId:e.task_id,title:e.title,
+          gateToken:e.gate_token||"",agent:e.agent,tools:e.allowed_tools||[],frozen:false};
+      sess.chat.push({role:"manager",ts:e.ts,text:"",card:card});
+    }
+    if(e.type==="gate_resolved"){
+      for(const message of sess.chat){
+        const card=message.card;
+        if(card&&card.gateId===e.gate_id&&card.gateToken===(e.gate_token||"")){
+          card.frozen=true;card.decision=e.decision;card.openPicker="";
+          if(card.kind==="gate-plan"&&e.overrides)
+            card.overrides=Object.assign({},e.overrides);
+        }
+      }
+    }
+    if(e.type==="agent_failed")
+      sess.chat.push({role:"manager",ts:e.ts,
+        text:"任务 "+e.task_id+" 的执行器 "+e.agent+" 失败了，我按降级链换下一位重试。",
+        card:{kind:"fail",task:e.task_id,agent:e.agent,error:e.error||"未知原因"}});
+    if(e.type==="task_failed")
+      sess.chat.push({role:"manager",ts:e.ts,
+        text:"任务 "+e.task_id+" 全链路失败：" + (e.error||"未知原因") + "。相关下游会被跳过。",
+        card:{kind:"fail",task:e.task_id,agent:"降级链已用尽",error:e.error||""}});
+    if(e.type==="agent_circuit_open")
+      sess.chat.push({role:"manager",ts:e.ts,
+        text:"执行器 "+e.agent+" 本轮熔断下线（"+(e.reason||"结构性故障")+"），后续任务会自动跳过它、换人。"});
+    if(e.type==="task_message_replied")
+      sess.chat.push({role:"manager",ts:e.ts,
+        text:"["+e.task_id+" · "+e.agent+"] "+(e.reply||"")});
+    if(e.type==="task_auto_finished")
+      sess.chat.push({role:"manager",ts:e.ts,
+        text:"任务 "+e.task_id+" 等待你回复超时（"+(e.reason||"空闲超时")+"），已自动收尾归档。"});
+    if(e.type==="task_stale")
+      sess.chat.push({role:"manager",ts:e.ts,
+        text:"提示：任务 "+e.cause_task_id+" 有了新回复，下游任务 "+e.task_id+" 的产出可能已过期。"});
+    if(e.type==="run_crashed"){
+      sess.status="failed";
+      const msg="引擎异常退出（"+(e.error||"未知原因")+"）——本次运行已中断，点“新目标”可以重来。";
+      sess.chat.push({role:"manager",ts:e.ts,text:msg});
+      notifyRun("Agent Hub · 引擎异常退出",trunc(sess.goal,50)+" · "+msg);
+    }
+    if(e.type==="run_cancelled"){
+      sess.status="cancelled";
+      const msg="已取消这次运行。已完成的任务保留，正在进行中的任务被中断——不算完成，也不算失败。";
+      sess.chat.push({role:"manager",ts:e.ts,text:msg});
+      notifyRun("Agent Hub · 已取消运行",trunc(sess.goal,50)+" · "+msg);
+    }
+    if(e.type==="run_finished"){
+      // Engine 在正常取消后仍会发 run_finished，让 serve.py 的看门狗知道
+      // 这不是崩溃。cancelled 是更具体的终态，不能被这个收尾事件改回 done。
+      const wasCancelled=sess.status==="cancelled";
+      const vals=Object.values(e.statuses||{});
+      if(!wasCancelled){
+        sess.status=vals.some(v=>v==="failed")?"failed":"done";
+        const done=vals.filter(v=>v==="done").length;
+        const msg=(sess.status==="done"?"全部完成 ":"运行结束，有任务失败 ")+done+"/"+vals.length+
+             " 项任务交付，本次花费 $"+(e.total_cost_usd||0).toFixed(4)+"。";
+        sess.chat.push({role:"manager",ts:e.ts,text:msg,
+          card:{kind:"done",ok:sess.status==="done"}});
+        notifyRun(sess.status==="done"?"Agent Hub · 运行完成":"Agent Hub · 有任务失败",
+          trunc(sess.goal,50)+" · "+msg);
+      }
+    }
+  }
+  S.busy=(S.sessions[S.sessions.length-1]||{}).status==="running";
+  renderAll();
+}
+
+/* ---------- derived view ---------- */
+function computeView(sess){
+  const v={tasks:new Map(),agents:new Map(),cost:0,waste:0,status:(sess&&sess.status)||"idle",
+    tokIn:0,tokOut:0};
+  if(!sess)return v;
+  const patch=(id,p)=>{const t=v.tasks.get(id);if(t)Object.assign(t,p);return t;};
+  const agent=(name,animal)=>{if(!v.agents.has(name))
+      v.agents.set(name,{name:name,animal:animal||"cat",status:"idle",stars:0,cost:0,
+        circuitOpen:false,circuitReason:"",awaitingInput:false});
+    const a=v.agents.get(name);if(animal)a.animal=animal;return a;};
+  for(const e of sess.events){
+    switch(e.type){
+      case "plan_created":for(const t of e.tasks)
+        v.tasks.set(t.id,Object.assign({},t,{status:t.status||"pending",cost:0,attempt:1,
+          intended:t.intended_agent||"",log:[],board:[],files:[]}));break;
+      case "task_ready":patch(e.task_id,{status:"ready"});break;
+      case "task_started":{patch(e.task_id,{status:"running",agent:e.agent,attempt:e.attempt||1,stale:false});
+        const a=agent(e.agent,e.animal);a.status="working";a.taskId=e.task_id;a.awaitingInput=false;
+        pushLog(e.task_id,e.ts,"接单",(e.title||"")+(e.attempt>1?"（第"+e.attempt+"次·降级链）":""));break;}
+      case "agent_thinking":{const t=[...v.tasks.values()].find(x=>x.agent===e.agent&&x.status==="running");
+        if(t)pushLog(t.id,e.ts,"思考",e.detail||"");break;}
+      case "agent_failed":{const a=v.agents.get(e.agent);
+        if(a&&a.taskId===e.task_id){a.status="sad";a.taskId=null;a.cost+=e.cost_usd||0;}
+        v.waste+=e.cost_usd||0;
+        patch(e.task_id,{status:"retrying"});
+        pushLog(e.task_id,e.ts,"失败",(e.error||"")+" → 降级链下一位");break;}
+      case "task_completed":{const t=patch(e.task_id,{status:"done",output:e.preview||"",
+          files:Array.isArray(e.files)?e.files:[]});
+        if(t)t.cost=e.cost_usd||0;
+        const a=v.agents.get(e.agent);if(a){a.status="idle";a.taskId=null;a.awaitingInput=false;a.stars=(a.stars||0)+1;a.cost+=e.cost_usd||0;}
+        v.tokIn+=e.usage?.input_tokens||0;v.tokOut+=e.usage?.output_tokens||0;
+        pushLog(e.task_id,e.ts,"交付","$"+(e.cost_usd||0).toFixed(4)+" · "+(e.preview||"").slice(0,140));break;}
+      case "task_failed":{const t=patch(e.task_id,{status:"failed",output:e.error||""});
+        if(t&&t.agent){const a=v.agents.get(t.agent);if(a){a.status="sad";a.taskId=null;a.awaitingInput=false;}}
+        pushLog(e.task_id,e.ts,"任务失败",e.error||"");break;}
+      case "agent_circuit_open":{const a=v.agents.get(e.agent);
+        if(a){a.circuitOpen=true;a.circuitReason=e.reason||"";}
+        pushLog(e.task_id,e.ts,"熔断下线",(e.reason||"结构性故障")+" → 后续任务自动换人");break;}
+      case "task_awaiting_input":{patch(e.task_id,{status:"awaiting_input"});
+        const a=v.agents.get(e.agent);if(a)a.awaitingInput=true;break;}
+      case "task_stale":{patch(e.task_id,{stale:true,staleCause:e.cause_task_id});break;}
+      case "blackboard_write":{const id=e.task_id||"";const t=v.tasks.get(id);
+        if(t)t.board.push({k:e.key||"notes/",v:e.preview||""});
+        pushLog(id,e.ts,"白板",(e.key||"note")+" = "+(e.preview||"").slice(0,90));break;}
+      case "run_finished":v.cost=e.total_cost_usd||0;
+        if(e.statuses)for(const kv of Object.entries(e.statuses))patch(kv[0],{status:kv[1]});break;
+    }
+  }
+  if(!v.cost){let s=0;for(const t of v.tasks.values())s+=t.cost||0;v.cost=s+v.waste;}
+  return v;
+  function pushLog(id,ts,kind,text){const t=v.tasks.get(id);
+    if(t)t.log.push({ts:fmtTs(ts||nowTs()).slice(0,5),kind:kind,text:text});}
+}
+
+/* ---------- sidebar ---------- */
+function renderSide(){
+  const nav=$("#sessions");nav.innerHTML="";
+  if(S.chatSession){
+    const draft=document.createElement("button");
+    draft.className="sess"+(S.activeIdx===S.sessions.length?" active":"");
+    draft.innerHTML='<span class="row"><span class="dot running"></span>'+
+      '<span class="s-title">当前经理草稿</span></span>'+
+      '<span class="s-meta">'+(S.sendPending?"经理处理中":"澄清中")+'</span>';
+    draft.onclick=()=>{S.activeIdx=S.sessions.length;S.followLatest=true;
+      S.drawer=null;S.preview=null;S.pvDiff=false;pvShown=null;renderAll();};
+    nav.appendChild(draft);
+  }
+  S.sessions.slice().reverse().forEach((sess,ri)=>{
+    const i=S.sessions.length-1-ri;
+    const b=document.createElement("button");
+    b.className="sess"+(i===S.activeIdx?" active":"");
+    const v=computeView(sess);
+    const done=[...v.tasks.values()].filter(t=>t.status==="done").length;
+    b.innerHTML='<span class="row"><span class="dot '+sess.status+'"></span>'+
+      '<span class="s-title">'+esc(sess.goal)+'</span></span>'+
+      '<span class="s-meta">'+({running:"运行中",done:"完成",failed:"失败",cancelled:"已取消",idle:"待命"}[sess.status]||"")+
+      " "+done+"/"+v.tasks.size+" · $"+v.cost.toFixed(4)+"</span>";
+    // 预览面板跟抽屉一样是"某次运行里某个任务"的上下文，换会话必须一起收，
+    // 否则会顶着上一次运行的文件不放（它比抽屉更宽、盖在最上层，很显眼）
+    b.onclick=()=>{S.activeIdx=i;S.followLatest=!S.chatSession&&i===S.sessions.length-1;
+      S.drawer=null;S.preview=null;S.pvDiff=false;pvShown=null;renderAll();};
+    nav.appendChild(b);
+  });
+  const v=computeView(S.sessions[S.activeIdx]);
+  $("#budget-text").textContent="$"+v.cost.toFixed(2);
+  $("#budget-bar").style.width=Math.min(100,v.cost/BUDGET*100)+"%";
+}
+
+/* ---------- office canvas ---------- */
+const cv=$("#office"),octx=cv.getContext("2d");
+let hits=[],view=computeView(null),raf=null;
+function sizeCanvas(){
+  const r=cv.getBoundingClientRect();if(!r.width||!r.height)return;
+  const dpr=window.devicePixelRatio||1;
+  const w=Math.round(r.width*dpr),h=Math.round(r.height*dpr);
+  if(cv.width!==w||cv.height!==h){cv.width=w;cv.height=h;}
+  octx.setTransform(dpr,0,0,dpr,0,0);octx.imageSmoothingEnabled=false;cv._sized=true;
+}
+window.addEventListener("resize",sizeCanvas);
+function drawOffice(t){
+  const w=cv.clientWidth,h=cv.clientHeight;if(!w||!h)return;
+  const dpr=window.devicePixelRatio||1;
+  if(!cv._sized||Math.abs(cv.width-w*dpr)>1)sizeCanvas();
+  const cs=getComputedStyle(document.documentElement);
+  const A=cs.getPropertyValue("--tile-a"),B=cs.getPropertyValue("--tile-b");
+  octx.clearRect(0,0,w,h);
+  for(let y=0;y<h;y+=24)for(let x=0;x<w;x+=24){
+    octx.fillStyle=((x/24+y/24)%2===0)?A:B;octx.fillRect(x,y,24,24);}
+  hits=[];
+  const agents=[...view.agents.values()];
+  if(!agents.length){
+    octx.fillStyle=cs.getPropertyValue("--dim");octx.font="500 13px Archivo";octx.textBaseline="top";
+    octx.fillText("发一个目标，动物员工就会入座",16,18);return;}
+  const cols=Math.max(1,Math.floor(w/126));
+  agents.forEach((a,i)=>{
+    const x=14+(i%cols)*126,y=14+Math.floor(i/cols)*118;
+    octx.fillStyle="#5a4a8a";octx.fillRect(x,y+66,96,9);
+    octx.fillStyle="#443768";octx.fillRect(x+5,y+75,8,16);octx.fillRect(x+83,y+75,8,16);
+    octx.fillStyle="#0d0b1e";octx.fillRect(x+62,y+42,32,24);
+    if(a.status==="working"&&!a.circuitOpen){octx.fillStyle="#7dff9b";
+      for(let k=0;k<3;k++)octx.fillRect(x+65,y+46+k*6,6+((t/150+k*7+i)%16),2);}
+    const bob=a.status==="working"?Math.round(Math.sin(t/160)*2):0;
+    octx.globalAlpha=a.circuitOpen?0.4:1;
+    spriteOn(octx,a.animal,x,y+16,4,bob);
+    octx.globalAlpha=1;
+    const bx=x+52,by=y+2;
+    if(a.status==="working"&&!a.circuitOpen){octx.fillStyle="#efeaff";octx.fillRect(bx,by,34,15);
+      octx.fillStyle="#241f42";const d=1+Math.floor(t/380)%3;
+      for(let k=0;k<d;k++)octx.fillRect(bx+6+k*9,by+6,4,4);}
+    else if(a.status==="sad"){octx.fillStyle=cs.getPropertyValue("--accent");
+      octx.fillRect(bx+8,by,4,10);octx.fillRect(bx+8,by+12,4,4);}
+    octx.fillStyle=cs.getPropertyValue("--ink");
+    octx.font="500 11px Archivo";octx.textBaseline="middle";
+    octx.fillText(a.name+(a.stars?"  ★"+a.stars:""),x,y+100);
+    if(a.circuitOpen){
+      octx.fillStyle=cs.getPropertyValue("--accent");
+      octx.fillRect(x+64,y+3,24,11);
+      octx.fillStyle="#fff";octx.font="700 7.5px Archivo";
+      octx.fillText("OFF",x+68,y+9);
+      octx.font="500 11px Archivo";
+    }
+    hits.push({x:x,y:y,w:104,h:104,task:a.taskId});
+  });
+}
+function loop(){
+  if(raf)cancelAnimationFrame(raf);
+  const step=t=>{try{if(S.strip&&S.tab==="office")drawOffice(t);}catch(e){console.warn(e);}
+    raf=requestAnimationFrame(step);};
+  raf=requestAnimationFrame(step);
+}
+cv.addEventListener("click",ev=>{
+  const r=cv.getBoundingClientRect(),mx=ev.clientX-r.left,my=ev.clientY-r.top;
+  for(const b of hits)if(mx>=b.x&&mx<=b.x+b.w&&my>=b.y&&my<=b.y+b.h){
+    if(b.task)openDrawer(b.task);return;}
+});
+
+/* ---------- roster ---------- */
+function renderRoster(){
+  const box=$("#roster");box.innerHTML="";
+  const agents=[...view.agents.values()];
+  const lab=document.createElement("div");lab.className="r-label";
+  lab.textContent=agents.length?("在岗 "+agents.length+" 人"):"还没有员工入座";
+  box.appendChild(lab);
+  for(const a of agents){
+    const row=document.createElement("div");row.className="r-row";
+    const c=document.createElement("canvas");paintSprite(c,a.animal,2);
+    const n=document.createElement("span");n.className="n";n.textContent=a.name;
+    const s=document.createElement("span");
+    s.className="s"+(a.status==="idle"&&!a.circuitOpen&&!a.awaitingInput?" idle":"");
+    s.textContent=a.circuitOpen?"已下线":a.awaitingInput?"等待回复":a.status==="working"?"工作中":a.status==="sad"?"已降级":("空闲"+(a.stars?" ★"+a.stars:""));
+    row.append(c,n,s);
+    if(a.taskId)row.onclick=()=>openDrawer(a.taskId);
+    box.appendChild(row);
+  }
+  if(agents.length){const h=document.createElement("div");h.className="hint";
+    h.textContent="点员工 = 打开它正在做的任务";box.appendChild(h);}
+}
+
+/* ---------- DAG ---------- */
+/* 仪表区和对话计划门复用此渲染器；布局与 SVG 连线逻辑保持同一份。 */
+function renderDag(box,tasks,opts){
+  opts=opts||{};
+  box.classList.add("dag-grid");
+  box.innerHTML="";
+  if(!tasks.length){box.innerHTML='<div style="font-size:12.5px;color:var(--dim)">计划创建后，依赖图会出现在这里</div>';return;}
+  const depth={},col=[];
+  const byId=new Map(tasks.map(t=>[t.id,t]));
+  const dep=t=>t.depends_on||[];
+  const calc=(t,seen)=>{
+    if(depth[t.id]!=null)return depth[t.id];
+    if(seen.has(t.id))return 0;seen.add(t.id);
+    let d=0;
+    for(const p of dep(t)){const pt=byId.get(p);if(pt)d=Math.max(d,calc(pt,seen)+1);}
+    return depth[t.id]=d;};
+  for(const t of tasks)calc(t,new Set());
+  for(const t of tasks){const d=depth[t.id]||0;(col[d]=col[d]||[]).push(t);}
+  box.style.gridTemplateColumns="repeat("+col.length+",minmax(148px,1fr))";
+  const svgNS="http://www.w3.org/2000/svg";
+  const svg=document.createElementNS(svgNS,"svg");
+  svg.setAttribute("width","100%");svg.setAttribute("height","100%");
+  box.appendChild(svg);
+  const pos={};
+  col.forEach((list,ci)=>{
+    const wrap=document.createElement("div");
+    wrap.style.cssText="display:flex;flex-direction:column;gap:12px;min-width:0";
+    const maxRows=Math.max.apply(null,col.map(c=>c.length));
+    wrap.style.paddingTop=((maxRows-list.length)*38)+"px";
+    list.forEach((t,ri)=>{
+      const b=document.createElement("button");
+      b.dataset.taskId=t.id;
+      const cls=t.status==="done"?"":(t.status==="running"||t.status==="awaiting_input")?" running":
+        (t.status==="failed"||t.status==="retrying")?" failed":
+        (t.status==="pending"||t.status==="ready")?" pending":"";
+      b.className="node"+cls;
+      const label={done:"已交付",running:"执行中",awaiting_input:"等待回复",failed:"失败",retrying:"降级重试中",
+        pending:"等待上游",ready:"待命",skipped:"已跳过"}[t.status]||t.status;
+      const meta=(t.agent?(t.agent+(t.cost?" · $"+t.cost.toFixed(4):"")):
+        (t.pinned?("已指定 "+t.pinned):t.intended?("预计 "+t.intended):
+          (dep(t).length?("阻塞于 "+dep(t).join(" / ")):"未派单")))+
+        (t.stale?" · 已过期":"");
+      b.innerHTML='<span class="k">'+esc(t.id)+" · "+label+(t.attempt>1?" "+t.attempt+"/3":"")+'</span>'+
+        '<span class="t">'+esc(t.title||t.id)+'</span><span class="m">'+esc(meta)+'</span>';
+      if(opts.picker)b.classList.add("pick");
+      b.onclick=()=>{if(opts.onClick)opts.onClick(t.id,b);};
+      wrap.appendChild(b);
+      pos[t.id]={ci:ci,ri:ri,el:b};
+    });
+    box.appendChild(wrap);
+  });
+  requestAnimationFrame(()=>{
+    const br=box.getBoundingClientRect();
+    svg.innerHTML="";
+    for(const t of tasks)for(const p of dep(t)){
+      const a=pos[p],b=pos[t.id];if(!a||!b)continue;
+      const ar=a.el.getBoundingClientRect(),brr=b.el.getBoundingClientRect();
+      const x1=ar.right-br.left,y1=ar.top-br.top+ar.height/2;
+      const x2=brr.left-br.left,y2=brr.top-br.top+brr.height/2;
+      const path=document.createElementNS(svgNS,"path");
+      const mx=(x1+x2)/2;
+      path.setAttribute("d","M"+x1+" "+y1+" C "+mx+" "+y1+" "+mx+" "+y2+" "+x2+" "+y2);
+      path.setAttribute("fill","none");path.setAttribute("stroke","currentColor");
+      path.setAttribute("stroke-width","1.5");path.setAttribute("opacity",".35");
+      svg.appendChild(path);
+    }
+  });
+}
+
+/* ---------- cost ---------- */
+function renderCost(){
+  $("#cost-num").textContent="$"+view.cost.toFixed(4);
+  $("#cost-sub").textContent="本次运行累计"+
+    (view.tokIn||view.tokOut?(" · "+(view.tokIn/1000).toFixed(1)+"k in / "+(view.tokOut/1000).toFixed(1)+"k out tokens"):"");
+  $("#cost-budget-label").textContent="护栏 $"+BUDGET.toFixed(2)+" · 仅按量 API";
+  const pct=Math.min(100,Math.round(view.cost/BUDGET*100));
+  $("#cost-pct").textContent=pct+"%";$("#cost-bar").style.width=pct+"%";
+  const note=$("#waste-note");
+  if(view.waste>0){note.hidden=false;
+    $("#waste-text").innerHTML="降级链重试浪费 <b>$"+view.waste.toFixed(4)+
+      "</b> —— 可在 capability_matrix.yaml 里调整这类任务的首选执行器。";}
+  else note.hidden=true;
+  const box=$("#by-agent");box.innerHTML="";
+  const list=[...view.agents.values()].sort((a,b)=>(b.cost||0)-(a.cost||0));
+  const max=Math.max.apply(null,[0.0001].concat(list.map(a=>a.cost||0)));
+  if(!list.length){box.innerHTML='<span style="color:var(--dim);font-size:12.5px">暂无花费</span>';return;}
+  for(const a of list){
+    const n=document.createElement("span");n.textContent=a.name+(a.status==="sad"?"（失败）":"");
+    const v=document.createElement("span");v.className="v";v.textContent="$"+(a.cost||0).toFixed(4);
+    const b=document.createElement("span");b.className="b"+((a.cost||0)>=max*0.5?" hi":"");
+    b.style.width=Math.max(2,(a.cost||0)/max*100)+"%";
+    box.append(n,v,b);
+  }
+  icons();
+}
+
+/* ---------- chat ---------- */
+function cardEl(c,ts){
+  const d=document.createElement("div");
+  d.className="card"+(c.kind==="fail"?" alert":"");
+  if(c.kind==="choices"){
+    const head=document.createElement("div");head.className="c-head";
+    head.innerHTML='<i data-lucide="list-checks"></i>';
+    head.appendChild(document.createTextNode(c.frozen
+      ?("经理的澄清问题 · "+(c.skipped?"已跳过":"已回答"))
+      :"经理想先确认几件事"));
+    d.appendChild(head);
+    const box=document.createElement("div");box.className="qbox";
+    c.answers=c.answers||{};
+    for(const q of c.questions){
+      // 题干和选项来自 LLM；使用 textContent，避免不可信文本被当成 HTML。
+      const qt=document.createElement("div");qt.className="qt";
+      qt.textContent=q.question;box.appendChild(qt);
+      const questionOptions=q.options||[];
+      if(!questionOptions.length){
+        const input=document.createElement("input");
+        input.className="other-in";input.placeholder="你的回答…";
+        input.value=c.answers[q.id]||"";input.disabled=!!c.frozen;
+        input.oninput=()=>{c.answers[q.id]=input.value;};
+        box.appendChild(input);continue;
+      }
+      const opts=document.createElement("div");opts.className="opts";
+      for(const o of questionOptions){
+        const button=document.createElement("button");
+        button.className="opt"+(c.answers[q.id]===o.label?" on":"");
+        button.textContent=o.label;
+        if(o.detail)button.title=o.detail;
+        if(c.frozen)button.disabled=true;
+        else button.onclick=()=>{c.answers[q.id]=o.label;
+          if(!o.other)delete c.answers["__other__"+q.id];
+          renderAll();};
+        opts.appendChild(button);
+      }
+      box.appendChild(opts);
+      const chosen=questionOptions.find(o=>o.label===c.answers[q.id]);
+      if(chosen&&chosen.other){
+        const input=document.createElement("input");
+        input.className="other-in";input.placeholder="补充说明…";
+        input.value=c.answers["__other__"+q.id]||"";input.disabled=!!c.frozen;
+        input.oninput=()=>{c.answers["__other__"+q.id]=input.value;};
+        box.appendChild(input);
+      }
+    }
+    d.appendChild(box);
+    if(!c.frozen){
+      const acts=document.createElement("div");acts.className="acts";
+      const submit=document.createElement("button");submit.className="btn primary";
+      submit.innerHTML='<i data-lucide="send"></i>提交回答';
+      submit.onclick=()=>submitChoices(c);acts.appendChild(submit);
+      const note=document.createElement("span");
+      note.style.cssText="font-size:11px;color:var(--dim);margin-left:8px";
+      note.textContent="也可以直接在下面输入框说别的";
+      acts.appendChild(note);d.appendChild(acts);
+    }
+    return d;
+  }
+  if(c.kind==="gate-plan"){
+    const head=document.createElement("div");head.className="c-head";
+    head.innerHTML='<i data-lucide="git-fork"></i>';
+    head.appendChild(document.createTextNode(c.frozen
+      ?("计划门 · "+(c.decision==="approve"?"已放行":"已取消"))
+      :"计划已生成 —— 确认后开工"));
+    d.appendChild(head);
+    const box=document.createElement("div");
+    // 布局来自 .dag-grid（renderDag 会加），这里只留卡片特有的
+    box.style.cssText="margin:8px 0;overflow-x:auto;padding-bottom:4px";
+    d.appendChild(box);
+    const tasks=[...view.tasks.values()].map(task=>Object.assign({},task,{
+      pinned:(c.overrides||{})[task.id]||""}));
+    renderDag(box,tasks,{picker:!c.frozen,onClick:(taskId)=>{
+      if(!c.frozen)togglePicker(c,taskId);
+    }});
+    if(!c.frozen&&c.openPicker)mountAgentPicker(c,c.openPicker,box);
+    const note=document.createElement("div");note.className="gate-note";
+    note.textContent=c.frozen?"":"点任一节点可以指定它用哪个模型；不指定就由路由自动决定。";
+    d.appendChild(note);
+    if(!c.frozen){
+      const acts=document.createElement("div");acts.className="acts";
+      const approve=document.createElement("button");approve.className="btn primary";
+      approve.innerHTML='<i data-lucide="play"></i>放行开工';
+      approve.disabled=!!c.posting;
+      approve.onclick=()=>postGate(c,"approve");
+      const cancel=document.createElement("button");cancel.className="btn";
+      cancel.innerHTML='<i data-lucide="x"></i>取消这次运行';
+      cancel.disabled=!!c.posting;
+      cancel.onclick=()=>postGate(c,"cancel");
+      acts.append(approve,cancel);d.appendChild(acts);
+    }
+    return d;
+  }
+  if(c.kind==="gate-task"){
+    const head=document.createElement("div");head.className="c-head";
+    head.innerHTML='<i data-lucide="shield-alert"></i>';
+    const outcome={approve:"允许",skip:"跳过",cancel:"取消"}[c.decision]||c.decision||"";
+    head.appendChild(document.createTextNode(c.frozen
+      ?("写盘确认 · 已"+outcome):"这个任务会动你的文件"));
+    d.appendChild(head);
+    const meta=document.createElement("div");meta.className="gate-note";
+    const tools=c.tools||[];
+    meta.textContent=c.taskId+" · "+(c.title||"")+" · 预计用 "+(c.agent||"?")+
+      "（降级链可能改变实际执行者）"+(tools.length?" · 工具 "+tools.join("/"):"");
+    d.appendChild(meta);
+    if(!c.frozen){
+      const acts=document.createElement("div");acts.className="acts";
+      const make=(cls,icon,label,decision)=>{const button=document.createElement("button");
+        button.className="btn "+cls;button.innerHTML='<i data-lucide="'+icon+'"></i>'+label;
+        button.disabled=!!c.posting;
+        button.onclick=()=>postGate(c,decision);acts.appendChild(button);};
+      make("primary","check","允许","approve");
+      make("","skip-forward","跳过这个任务","skip");
+      make("","x","取消整个运行","cancel");
+      d.appendChild(acts);
+    }
+    return d;
+  }
+  if(c.kind==="plan"){
+    d.innerHTML='<div class="c-head"><i data-lucide="git-fork"></i>计划已创建 · '+c.tasks.length+' 任务</div>'+
+      '<div class="chips">'+c.tasks.map(t=>'<span class="chip'+(t.dep?" dim":"")+'">'+(t.dep?"→ ":"")+esc(t.id)+'</span>').join("")+'</div>';
+    const b=document.createElement("button");b.className="btn ghost";
+    b.innerHTML='<i data-lucide="maximize-2"></i>在依赖图里看';
+    b.onclick=()=>openTab("dag");d.appendChild(b);
+  }else if(c.kind==="fail"){
+    d.innerHTML='<div style="display:flex;gap:10px;align-items:flex-start">'+
+      '<i data-lucide="circle-x"></i><div class="mono">'+esc(c.agent)+' · '+esc(c.error)+'</div></div>';
+    const acts=document.createElement("div");acts.className="acts";
+    const mk=(cls,icon,label,fn)=>{const b=document.createElement("button");b.className="btn "+cls;
+      b.innerHTML='<i data-lucide="'+icon+'"></i>'+label;b.onclick=fn;acts.appendChild(b);};
+    mk("primary","rotate-ccw","重跑 "+c.task,()=>sendText("重跑任务 "+c.task));
+    mk("","message-circle-more","追问执行器",()=>setPromptText("@"+c.task+" "));
+    mk("","sliders-horizontal","看成本影响",()=>openTab("cost"));
+    mk("","panel-right-open","打开任务详情",()=>openDrawer(c.task));
+    d.appendChild(acts);
+  }else{
+    d.innerHTML='<div class="c-head"><i data-lucide="'+(c.ok?"circle-check":"triangle-alert")+'"></i>'+
+      (c.ok?"运行结束 · 全部交付":"运行结束 · 有失败任务")+'</div>';
+    // 这轮真正落到磁盘上的文件，汇总在收尾卡片里直接点开预览
+    const seen=new Set(),fw=document.createElement("div");
+    for(const t of view.tasks.values())for(const f of (t.files||[])){
+      if(seen.has(f.path))continue;seen.add(f.path);
+      fw.appendChild(fileRow(t.id,f));}
+    if(seen.size){const lab=document.createElement("div");
+      lab.style.cssText="font-size:11.5px;color:var(--dim);margin:10px 0 6px";
+      lab.textContent="交付文件 "+seen.size+" 个 · 点开可预览";
+      d.append(lab,fw);}
+  }
+  return d;
+}
+
+/* agent 选择器内联放在流程节点下；抽屉只保留“任务详情”语义。 */
+function renderAgentPicker(card,taskId){
+  const wrap=document.createElement("div");wrap.className="qbox agent-picker";
+  wrap.style.cssText="display:flex;flex-direction:column;gap:4px;margin-top:6px";
+  const KIND_BADGE={claude_code:"订阅",codex:"订阅",codebuddy:"积分",
+    openrouter:"$ 按量",dsh:"$ 按量 · 未计量",mock:"模拟"};
+  const TIER_BADGE={strong:"强推理",mid:"中坚",economy:"经济"};
+  const add=(name,label,badges,blurb,fallback,animal,selected)=>{
+    const button=document.createElement("button");
+    button.className="opt"+(selected?" on":"");
+    // 名称、徽章与说明来自能力矩阵，必须作为文本而不是 HTML 注入。
+    if(animal){const sprite=document.createElement("canvas");
+      paintSprite(sprite,animal,2);sprite.setAttribute("aria-hidden","true");
+      sprite.style.cssText="width:24px;height:24px;image-rendering:pixelated;flex:0 0 auto";
+      button.appendChild(sprite);}
+    const copy=document.createElement("span");
+    copy.textContent=label+(badges.length?"  ["+badges.join(" · ")+"]":"");
+    button.appendChild(copy);
+    button.title=blurb||fallback;
+    button.onclick=()=>{
+      if(name)card.overrides[taskId]=name;else delete card.overrides[taskId];
+      renderAll();
+    };
+    wrap.appendChild(button);
+  };
+  add("","自动（由路由决定）",[],"不指定，走既有的能力、难度与额度路由",
+      "",null,!card.overrides[taskId]);
+  for(const agent of card.agents){
+    const badges=[];
+    if(KIND_BADGE[agent.kind])badges.push(KIND_BADGE[agent.kind]);
+    if(TIER_BADGE[agent.tier])badges.push(TIER_BADGE[agent.tier]);
+    if(agent.specialty)badges.push(agent.specialty);
+    const fallback=[KIND_BADGE[agent.kind]||"自定义执行器",
+      TIER_BADGE[agent.tier]||"",agent.specialty?("专长 "+agent.specialty):""]
+      .filter(Boolean).join("；");
+    add(agent.name,agent.name,badges,agent.blurb||"",fallback,agent.animal,
+      card.overrides[taskId]===agent.name);
+  }
+  return wrap;
+}
+function mountAgentPicker(card,taskId,box){
+  const node=[...box.querySelectorAll(".node")].find(item=>item.dataset.taskId===taskId);
+  if(!node)return;
+  const picker=renderAgentPicker(card,taskId);picker.dataset.picker=taskId;
+  node.parentNode.insertBefore(picker,node.nextSibling);
+}
+function togglePicker(card,taskId){
+  card.openPicker=card.openPicker===taskId?"":taskId;
+  renderAll();
+}
+async function postGate(card,decision){
+  if(card.posting||card.frozen)return;
+  card.posting=true;renderAll();
+  try{
+    const res=await fetch("/gate",{method:"POST",
+      headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({gate_id:card.gateId,gate_token:card.gateToken,decision:decision,
+                           overrides:card.overrides||{}})});
+    const data=await res.json().catch(()=>({}));
+    if(!res.ok){card.posting=false;renderAll();
+      hint("放行失败："+((data&&data.error)||res.status));return;}
+    card.posting=false;card.frozen=true;card.decision=decision;card.openPicker="";
+    renderAll();hint(decision==="approve"?"已放行":decision==="skip"?"已跳过":"已取消");
+  }catch(_){card.posting=false;renderAll();hint("连不上 serve.py，无法放行");}
+}
+function renderChat(sess){
+  const chat=$("#chat");chat.innerHTML="";
+  const msgs=sess?sess.chat.slice():[];
+  const showPreChat=S.chatSession?S.activeIdx===S.sessions.length
+                                 :S.activeIdx>=S.sessions.length-1;
+  if(S.preChat.length&&showPreChat)msgs.push.apply(msgs,S.preChat);
+  if(S.pendingGoal&&S.activeIdx>=S.sessions.length-1)
+    msgs.push({role:"user",text:S.pendingGoal.text,ts:S.pendingGoal.ts},{role:"manager",text:"__typing__",ts:nowTs()});
+  if(!msgs.length){
+    chat.innerHTML='<div id="chat-empty"><div class="px">AGENT HUB</div>'+
+      '<div>把目标告诉经理，它会拆解任务并派给合适的动物员工。<br>DEMO 模式下会播放一次模拟运行。</div></div>';
+    return;}
+  for(const m of msgs){
+    const d=document.createElement("div");d.className="msg "+m.role;
+    const av=document.createElement("div");av.className="av";
+    if(m.role==="manager"){const c=document.createElement("canvas");av.appendChild(c);paintSprite(c,"captain",2);}
+    else av.textContent="你";
+    const body=document.createElement("div");body.className="body";
+    const who=document.createElement("div");who.className="who";
+    who.textContent=(m.role==="manager"?"Hub 经理":"你")+" · "+fmtTs(m.ts);
+    const text=document.createElement("div");text.className="text";
+    if(m.text==="__typing__"){
+      // 有进度行时就不再重复那句纯文本占位符 —— 进度行自己就在说
+      // 「正在思考」，而且带秒数，信息更多
+      if(S.mgrLive)text.appendChild(
+        renderManagerProgress(S.mgrProgress,S.mgrStart||nowTs(),true));
+      else text.innerHTML='<span class="typing">正在思考…</span>';
+    }
+    else text.textContent=m.text;
+    body.append(who,text);
+    if(m.card)body.appendChild(cardEl(m.card,m.ts));
+    d.append(av,body);chat.appendChild(d);
+  }
+  icons();
+  const sc=$("#chat-scroll");sc.scrollTop=sc.scrollHeight;
+}
+
+/* ---------- drawer ---------- */
+function openDrawer(id){S.drawer=id;renderDrawer();}
+function renderDrawer(){
+  const wrap=$("#drawer-wrap");
+  const t=S.drawer?view.tasks.get(S.drawer):null;
+  if(!t){wrap.classList.remove("on");return;}
+  wrap.classList.add("on");
+  const label={done:"已交付",running:"执行中",awaiting_input:"等待回复",failed:"失败",retrying:"降级重试中",
+    pending:"等待上游",ready:"待命",skipped:"已跳过"}[t.status]||t.status;
+  $("#d-kicker").textContent=t.id+" · "+label;
+  $("#d-title").textContent=t.title||t.id;
+  $("#d-meta").textContent=(t.agent||"未派单")+(t.cost?" · $"+t.cost.toFixed(4):"")+
+    ((t.depends_on&&t.depends_on.length)?" · 依赖 "+t.depends_on.join(" / "):"")+
+    (t.stale?" · 产出已过期":"");
+  const body=$("#d-body");body.innerHTML="";
+  if(t.files&&t.files.length){
+    const fw=document.createElement("div");
+    for(const f of t.files)fw.appendChild(fileRow(t.id,f));
+    body.appendChild(sec("交付文件 · 点开可预览",fw));
+  }
+  body.appendChild(sec("产出全文",(()=>{const p=document.createElement("div");p.className="d-out";
+    p.textContent=t.output||"（尚无产出）";return p;})()));
+  const logWrap=document.createElement("div");
+  for(const l of t.log){const r=document.createElement("div");r.className="d-log";
+    r.innerHTML='<span class="ts">'+esc(l.ts)+'</span><span><b>'+esc(l.kind)+"</b> "+esc(l.text)+"</span>";
+    logWrap.appendChild(r);}
+  if(!t.log.length)logWrap.innerHTML='<div style="font-size:12.5px;color:var(--dim)">暂无日志</div>';
+  body.appendChild(sec("思考 / 行动日志",logWrap));
+  const bWrap=document.createElement("div");
+  for(const b of t.board){const r=document.createElement("div");r.className="d-board";
+    r.innerHTML='<span class="k">'+esc(b.k)+'</span><span class="v">'+esc(b.v)+"</span>";bWrap.appendChild(r);}
+  if(!t.board.length)bWrap.innerHTML='<div style="font-size:12.5px;color:var(--dim)">这个任务还没写过黑板</div>';
+  body.appendChild(sec("黑板写入",bWrap));
+  icons();
+  function sec(label,node){const d=document.createElement("div");d.className="d-sec";
+    const l=document.createElement("div");l.className="lab";l.textContent=label;
+    d.append(l,node);return d;}
+}
+$("#d-close").onclick=()=>{S.drawer=null;renderDrawer();};
+$("#d-rerun").onclick=()=>{if(S.drawer)sendText("重跑任务 "+S.drawer);};
+$("#d-ask").onclick=()=>{if(S.drawer&&setPromptText("@"+S.drawer+" ")){
+  S.drawer=null;renderDrawer();}};
+$("#d-copy").onclick=()=>{const t=S.drawer&&view.tasks.get(S.drawer);
+  if(t&&navigator.clipboard)navigator.clipboard.writeText(t.output||"").then(()=>hint("产出已复制"));};
+
+/* ---------- file preview ----------
+   任务真正写在磁盘上的文件由后端记账：hub/artifacts.py 对 workdir 做
+   前后快照 diff，写进黑板 tasks/{id}/files，并挂在 task_completed 事件
+   上。取文件走 GET /file?task=&path=，后端拿黑板那份清单当白名单，
+   没记录过的路径一律 404（所以这里传 path 不构成路径穿越面）。 */
+const FILE_ICON=[[/\.html?$/i,"code-xml"],[/\.(md|markdown)$/i,"file-text"],
+  [/\.(png|jpe?g|gif|webp|svg|bmp|ico)$/i,"image"],[/\.pdf$/i,"file-type"],
+  [/\.(csv|tsv|xlsx?)$/i,"table"],[/\.(docx?|pptx?)$/i,"file-text"],
+  [/\.(js|mjs|ts|tsx|jsx|py|go|rs|java|rb|php|sh|c|h|cpp|css|scss|json|ya?ml|toml|xml|sql)$/i,"file-code"]];
+const PV_IMG=/\.(png|jpe?g|gif|webp|svg|bmp|ico)$/i;
+const PV_MD=/\.(md|markdown)$/i;
+const PV_HTML=/\.html?$/i;
+const PV_PDF=/\.pdf$/i;
+const PV_TEXT=/\.(txt|log|json|ya?ml|toml|ini|csv|tsv|xml|sql|sh|py|js|mjs|ts|tsx|jsx|css|scss|c|h|cpp|go|rs|java|rb|php|env|cfg|conf)$/i;
+const fileIcon=p=>{for(const r of FILE_ICON)if(r[0].test(p))return r[1];return "file"};
+const fileUrl=(task,path)=>"/file?task="+encodeURIComponent(task)+"&path="+encodeURIComponent(path);
+function fmtBytes(n){if(n==null)return"";
+  if(n<1024)return n+" B";if(n<1024*1024)return (n/1024).toFixed(1)+" KB";
+  return (n/1024/1024).toFixed(1)+" MB";}
+function fileRow(taskId,f){
+  const b=document.createElement("button");b.className="f-row";
+  b.innerHTML='<i data-lucide="'+fileIcon(f.path)+'"></i><span class="n">'+esc(f.path)+
+    '</span><span class="s">'+esc(fmtBytes(f.size))+'</span>';
+  b.onclick=()=>openPreview(taskId,f);
+  return b;
+}
+function openPreview(taskId,f){S.preview={task:taskId,path:f.path,size:f.size};
+  S.pvDiff=false;pvShown=null;renderPreview();}
+// renderAll() 每次轮询到新事件都会调一遍这里，所以必须幂等：同一个文件
+// 已经渲染过就直接返回，否则每秒都会重新 fetch 一次、正文闪回"读取中…"
+let pvShown=null;
+function renderPreview(){
+  if(S.pvDiff)return;   // git diff 视图持有面板，等用户切回文件视图
+  const wrap=$("#pv-wrap"),p=S.preview;
+  const key=p?p.task+"\n"+p.path:null;
+  if(key===pvShown)return;
+  pvShown=key;
+  if(!p){wrap.classList.remove("on");$("#pv-body").innerHTML="";return;}
+  wrap.classList.add("on");
+  $("#pv-kicker").textContent=p.task+" 的交付物"+(p.size!=null?" · "+fmtBytes(p.size):"");
+  $("#pv-title").textContent=p.path;
+  const url=fileUrl(p.task,p.path);
+  $("#pv-dl").href=url;$("#pv-dl").setAttribute("download",p.path.split("/").pop());
+  const body=$("#pv-body");body.innerHTML="";
+  // DEMO 模式的事件是前端伪造的，磁盘上并没有这些文件，说清楚而不是让
+  // 用户对着一个永远转不出来的加载态猜
+  if(S.mode!=="live"){
+    body.innerHTML=note("DEMO 模式没有真实文件","这些交付物是模拟事件里的占位数据。"+
+      "用 python3 serve.py 起服务、真实跑一次任务，就能在这里预览真产出。");
+    icons();return;}
+  if(PV_IMG.test(p.path)){const img=document.createElement("img");img.src=url;img.alt=p.path;
+    img.onerror=()=>{body.innerHTML=note("图片打不开","文件可能已经被删除或移动了。");icons();};
+    body.appendChild(img);icons();return;}
+  if(PV_HTML.test(p.path)||PV_PDF.test(p.path)){
+    const fr=document.createElement("iframe");fr.src=url;
+    // 生成出来的页面是 agent 写的，按不可信内容对待：allow-scripts 让页面
+    // 里的 JS 还能跑（不然预览一个交互页面等于白看），但不给
+    // allow-same-origin，它就碰不到本页 DOM / localStorage。PDF 走浏览器
+    // 内置阅读器，sandbox 会把它关掉，所以只对 HTML 加。
+    if(PV_HTML.test(p.path))fr.setAttribute("sandbox","allow-scripts allow-popups");
+    body.appendChild(fr);icons();return;}
+  const isText=PV_TEXT.test(p.path)||PV_MD.test(p.path);
+  if(!isText){
+    body.innerHTML=note("这种格式浏览器没法直接预览",
+      "docx / pptx / xlsx 这类二进制文档需要专门的解析器，这里不做。"+
+      "点右上角「下载」用本机应用打开。");
+    icons();return;}
+  body.innerHTML='<div class="pv-pad" style="color:var(--dim);font-size:12.5px">读取中…</div>';
+  fetch(url).then(r=>{if(!r.ok)throw new Error("HTTP "+r.status);return r.text();})
+    .then(text=>{
+      if(!S.preview||S.preview.path!==p.path)return;   // 期间换了文件
+      const d=document.createElement("div");d.className="pv-pad";
+      if(PV_MD.test(p.path)){d.classList.add("pv-md");d.innerHTML=mdToHtml(text);}
+      else{d.classList.add("pv-txt");d.textContent=text;}
+      body.innerHTML="";body.appendChild(d);})
+    .catch(err=>{body.innerHTML=note("读不到这个文件",
+      String(err.message||err)+"。文件可能已被删除，或者当前不是 LIVE 服务模式。");icons();});
+  function note(title,text){return '<div class="pv-note"><b>'+esc(title)+'</b>'+esc(text)+'</div>';}
+}
+/* 极简 Markdown 渲染：标题/列表/引用/分割线/代码块/行内样式。
+   故意不引 CDN 库——这个前端是单文件零构建，双击也要能打开。
+   一切先 esc()，所以 .md 里夹带的 HTML 只会显示成文本，不会执行。 */
+function mdToHtml(src){
+  const blocks=[];
+  src=String(src).replace(/```[\s\S]*?(?:```|$)/g,m=>{
+    // 先把围栏代码块整段抽走，占位符用 NUL 包起来：换成可见字符
+    // （比如空格包数字）会把正文里「共 12 个文件」这种普通文本误还原
+    const body=m.replace(/^```[^\n]*\n?/,"").replace(/```\s*$/,"");
+    return "\u0000"+(blocks.push('<pre class="pv-code">'+esc(body)+"</pre>")-1)+"\u0000";});
+  const safeHref=u=>/^(https?:|\/|#|\.)/i.test(u)?u.replace(/"/g,"%22"):"#";
+  const inline=s=>esc(s)
+    .replace(/`([^`]+)`/g,"<code>$1</code>")
+    .replace(/!\[([^\]]*)\]\(([^)\s]+)\)/g,(m,a)=>"<i>[图片 "+a+"]</i>")
+    .replace(/\[([^\]]+)\]\(([^)\s]+)\)/g,(m,t,u)=>
+      '<a href="'+safeHref(u)+'" target="_blank" rel="noopener">'+t+"</a>")
+    .replace(/\*\*([^*]+)\*\*/g,"<b>$1</b>")
+    .replace(/(^|[^*])\*([^*\n]+)\*/g,"$1<i>$2</i>");
+  const out=[];let list=null;
+  const closeList=()=>{if(list){out.push("</"+list+">");list=null;}};
+  for(const raw of src.split("\n")){
+    const line=raw.replace(/\s+$/,"");
+    if(!line.trim()){closeList();continue;}
+    if(/^\u0000\d+\u0000$/.test(line.trim())){closeList();out.push(line.trim());continue;}
+    let m;
+    if((m=line.match(/^(#{1,6})\s+(.*)$/))){closeList();
+      out.push("<h"+m[1].length+">"+inline(m[2])+"</h"+m[1].length+">");continue;}
+    if(/^(-{3,}|\*{3,}|_{3,})$/.test(line.trim())){closeList();out.push("<hr>");continue;}
+    if((m=line.match(/^\s*[-*+]\s+(.*)$/))){
+      if(list!=="ul"){closeList();out.push("<ul>");list="ul";}
+      out.push("<li>"+inline(m[1])+"</li>");continue;}
+    if((m=line.match(/^\s*\d+[.)]\s+(.*)$/))){
+      if(list!=="ol"){closeList();out.push("<ol>");list="ol";}
+      out.push("<li>"+inline(m[1])+"</li>");continue;}
+    if((m=line.match(/^>\s?(.*)$/))){closeList();
+      out.push("<blockquote>"+inline(m[1])+"</blockquote>");continue;}
+    closeList();out.push("<p>"+inline(line)+"</p>");
+  }
+  closeList();
+  return out.join("").replace(/\u0000(\d+)\u0000/g,(m,i)=>blocks[+i]!==undefined?blocks[+i]:m);
+}
+function pvNote(title,text){return '<div class="pv-note"><b>'+esc(title)+'</b>'+esc(text)+'</div>';}
+/* ---------- git diff view (live, worktree vs HEAD) ---------- */
+async function openDiff(){
+  const p=S.preview;
+  if(!p||S.mode!=="live")return;
+  $("#pv-diff").disabled=true;
+  try{
+    const res=await fetch("/file/diff?task="+encodeURIComponent(p.task)+"&path="+encodeURIComponent(p.path));
+    const d=await res.json().catch(()=>({}));
+    if(!res.ok){hint("diff 失败："+((d&&d.error)||res.status));return;}
+    S.pvDiff=true;pvShown=null;
+    const body=$("#pv-body");
+    if(d.ok===false){
+      body.innerHTML=pvNote(d.error,"这不是文件损坏：要么本机没装 git，要么工作目录不是 git 仓库（在 workdir 里 git init 之后再来看）。");
+    }else{
+      body.innerHTML='<pre class="pv-txt" style="white-space:pre;overflow:auto">'+esc(d.diff)+
+        (d.truncated?'\n\n—— diff 过长已截断，用本机 git diff 查看完整内容 ——':'')+'</pre>';
+      if(d.note)body.innerHTML+='<div class="pv-note">'+esc(d.note)+'</div>';
+    }
+    $("#pv-diff").hidden=true;$("#pv-file").hidden=false;
+  }catch(e){hint("diff 失败："+e.message,true)}
+  finally{$("#pv-diff").disabled=false;}
+}
+$("#pv-diff").onclick=openDiff;
+$("#pv-file").onclick=()=>{S.pvDiff=false;pvShown=null;renderPreview();};
+$("#pv-close").onclick=()=>{S.preview=null;S.pvDiff=false;pvShown=null;renderPreview();};
+
+/* ---------- tabs / strip / theme ---------- */
+function setStrip(v){S.strip=v;$("#strip").classList.toggle("collapsed",!v);
+  $("#strip-label").textContent=v?"收起":"展开";
+  try{localStorage.setItem("ah_strip",v?"1":"0")}catch(_){}
+  syncTabs();if(v)requestAnimationFrame(sizeCanvas);}
+function openTab(tab){S.tab=tab;setStrip(true);
+  try{localStorage.setItem("ah_tab",tab)}catch(_){}
+  syncTabs();renderPane();}
+function clickTab(tab){
+  if(!S.strip){openTab(tab);return;}
+  if(S.tab===tab){setStrip(false);return;}
+  openTab(tab);
+}
+function syncTabs(){
+  document.querySelectorAll(".seg").forEach(b=>
+    b.classList.toggle("on",b.dataset.tab===S.tab&&S.strip));
+  document.querySelectorAll(".pane").forEach(p=>
+    p.classList.toggle("on",p.id===S.tab+"-pane"));
+}
+function renderPane(){
+  if(S.tab==="dag")renderDag($("#dag"),[...view.tasks.values()],{onClick:openDrawer});
+  else if(S.tab==="cost")renderCost();
+  else{renderRoster();requestAnimationFrame(sizeCanvas);}
+}
+document.querySelectorAll(".seg").forEach(b=>b.onclick=()=>clickTab(b.dataset.tab));
+$("#strip-toggle").onclick=()=>setStrip(!S.strip);
+function setTheme(t){S.theme=t;document.documentElement.dataset.theme=t;
+  try{localStorage.setItem("ah_theme",t)}catch(_){}}
+$("#theme-btn").onclick=()=>setTheme(S.theme==="dark"?"light":"dark");
+window.addEventListener("keydown",e=>{
+  if((e.metaKey||e.ctrlKey)&&e.key==="\\"){e.preventDefault();setStrip(!S.strip);}
+  if(e.key==="Escape"&&S.preview){S.preview=null;S.pvDiff=false;pvShown=null;renderPreview();return;}
+  if(e.key==="Escape"&&S.drawer){S.drawer=null;renderDrawer();}
+});
+
+/* ---------- master render ---------- */
+/* ---------- 草稿区什么时候不能操作 ----------
+   原本七个控件在 renderAll 里各写一遍 `S.sendPending||S.restoringSessions`。
+   加 restoringSessions 那次就漏改过 #mode-btn —— 七份重复的布尔式，漏一个
+   不会有任何提示，界面只是安静地允许了一次本不该允许的操作。
+   现在判据一处定义、控件一处登记：新增控件加进 DRAFT_CONTROLS，新增条件
+   改 draftLocked()，两者都不必动第二个地方。 */
+const DRAFT_CONTROLS=["#prompt","#new-btn","#mode-btn","#sw-manager","#sw-assign","#sw-gate"];
+function draftLocked(){
+  // sendPending：这一轮经理还在飞（本页发的，或刷新后从服务端恢复出来的）。
+  // restoringSessions：开机恢复还没落定，此刻界面状态未必是服务端的真相。
+  return S.sendPending||S.restoringSessions;
+}
+
+function renderAll(){
+  const sess=S.sessions[S.activeIdx];
+  view=computeView(sess);
+  renderSide();renderChat(sess);renderPane();renderDrawer();renderPreview();
+  const done=[...view.tasks.values()].filter(t=>t.status==="done").length;
+  $("#run-text").textContent=view.tasks.size
+    ? ({running:"运行中",done:"已完成",failed:"有失败",cancelled:"已取消",idle:"待命"}[view.status]||"")+" · "+done+"/"+view.tasks.size+" · $"+view.cost.toFixed(4)
+    : "待命";
+  const locked=draftLocked();
+  for(const sel of DRAFT_CONTROLS)$(sel).disabled=locked;
+  // 发送多一条：LIVE 模式下有 run 在跑时也不能发。其余条件必须走同一个
+  // 判据，否则又变回七份各自维护的布尔式。
+  $("#send").disabled=locked||(S.busy&&S.mode==="live");
+  $("#cancel-run").hidden=!(S.busy&&S.mode==="live");
+  $("#export-run").hidden=!(S.mode==="live"&&view.tasks.size>0);
+  $("#pv-diff").hidden=!(S.mode==="live"&&S.preview&&!S.pvDiff);
+  $("#pv-file").hidden=!S.pvDiff;
+  if(sess){
+    $("#export-run").href="/export?run="+encodeURIComponent(sess.runId||"");
+    $("#export-run").setAttribute("download",
+      "agent-hub-export-"+(sess.runId||"local")+".zip");
+  }
+  icons();
+}
+
+/* ---------- send ---------- */
+function hint(msg){const h=$("#input-hint");h.textContent=msg;
+  clearTimeout(hint._t);hint._t=setTimeout(()=>h.textContent="",6000);}
+function autoGrow(){const ta=$("#prompt");ta.style.height="auto";
+  ta.style.height=Math.min(ta.scrollHeight,120)+"px";}
+
+/* ---------- 工作区（后端已有；保存后由下一次运行消费） ---------- */
+async function loadWorkdir(){
+  try{
+    const res=await fetch("/settings");
+    if(!res.ok)return;
+    const data=await res.json();
+    S.workdir=data.workdir||"";
+    renderWorkdirChip();
+  }catch(_){/* file:// 演示模式连不上 serve.py 时静默留空 */}
+}
+function renderWorkdirChip(){
+  const name=$("#wk-name"),chip=$("#wk-chip");
+  if(!name||!chip)return;
+  const path=S.workdir||"";
+  name.textContent=path?(path.split("/").filter(Boolean).pop()||path):"工作区";
+  // DOM 属性赋值不经过 HTML 解析，比字符串拼 title/outerHTML 更安全；
+  // 也不能用 outerHTML 重建节点，否则会丢掉下面绑定的 onclick。
+  chip.title=(path||"未配置工作区")+" · 下次运行生效";
+}
+async function saveWorkdir(path){
+  try{
+    const res=await fetch("/settings/workdir",{method:"POST",
+      headers:{"Content-Type":"application/json"},body:JSON.stringify({path:path})});
+    const data=await res.json().catch(()=>({}));
+    if(!res.ok){hint("保存失败："+((data&&data.error)||res.status));return;}
+    S.workdir=data.workdir||path;renderWorkdirChip();
+    $("#wk-path").hidden=true;$("#wk-save").hidden=true;$("#wk-path").value="";
+    hint("工作区已保存，下次运行生效");
+  }catch(_){hint("连不上 serve.py，无法保存工作区");}
+}
+$("#wk-chip").onclick=async()=>{
+  try{
+    const res=await fetch("/settings/pick-workdir",{method:"POST",
+      headers:{"Content-Type":"application/json"},body:"{}"});
+    const data=await res.json().catch(()=>({}));
+    if(res.ok&&data.cancelled){hint("已取消选择");return;}
+    if(res.ok&&data.path){await saveWorkdir(data.path);return;}
+    $("#wk-path").hidden=false;$("#wk-save").hidden=false;$("#wk-path").focus();
+    hint((data&&data.error)||"请手动粘贴文件夹绝对路径");
+  }catch(_){hint("连不上 serve.py");}
+};
+$("#wk-save").onclick=()=>{
+  const path=$("#wk-path").value.trim();
+  if(!path){hint("路径是空的");return;}
+  saveWorkdir(path);
+};
+
+/* ---------- 门控与模型偏好（config 只记 UI，生效值由后端转成 argv） ---------- */
+async function loadAgents(){
+  try{
+    const settingsRes=await fetch("/settings");
+    if(!settingsRes.ok)return;
+    const settings=await settingsRes.json();
+    const prefs=settings.ui_prefs||{};
+    $("#sw-assign").value=prefs.assign_mode||"auto";
+    $("#sw-gate").value=prefs.gate_mode||"auto";
+
+    const agentsRes=await fetch("/agents");
+    if(!agentsRes.ok)return;
+    const data=await agentsRes.json();
+    S.agents=data.agents||[];S.agentPrecision=data.note||"";
+    const select=$("#sw-manager");select.replaceChildren();
+    const automatic=document.createElement("option");
+    automatic.value="";automatic.textContent="经理 · 自动";select.appendChild(automatic);
+    for(const agent of S.agents){
+      const option=document.createElement("option");
+      option.value=agent.name;option.disabled=!agent.installed;
+      option.textContent="经理 · "+agent.name+(agent.installed?"":"（本机未安装）");
+      option.title=agent.blurb||agent.detail||"";
+      select.appendChild(option);
+    }
+    select.value=prefs.manager_agent||"";
+    select.title="谁来跟你讨论想法。独占：选定后不降级"+
+      (S.agentPrecision?" · "+S.agentPrecision:"");
+    renderManagerWarning();
+  }catch(_){/* file:// 演示模式或服务未启动时保持默认值 */}
+}
+function renderManagerWarning(){
+  const name=$("#sw-manager").value;
+  const agent=S.agents.find(item=>item.name===name);
+  const warning=$("#manager-warning");
+  const visible=!!(agent&&agent.kind==="openrouter");
+  warning.hidden=!visible;
+  warning.textContent=visible?"经理费用不受护栏":"";
+}
+let prefsSave=Promise.resolve(true);
+function currentPrefs(){return {manager_agent:$("#sw-manager").value,
+  assign_mode:$("#sw-assign").value,gate_mode:$("#sw-gate").value};}
+function savePrefs(){
+  const snapshot=currentPrefs();
+  prefsSave=prefsSave.catch(()=>false).then(async()=>{
+    try{
+      const res=await fetch("/settings/config",{method:"POST",
+        headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({ui_prefs:snapshot})});
+      const data=await res.json().catch(()=>({}));
+      if(!res.ok){hint("设置没保存："+((data&&data.error)||res.status));return false;}
+      return true;
+    }catch(_){hint("连不上 serve.py，设置没保存");return false;}
+  });
+  return prefsSave;
+}
+async function waitForPrefs(){
+  // `await prefsSave` captures one Promise.  A programmatic change (or an
+  // already queued change event) can append a newer save while that Promise
+  // is pending, so keep waiting until the observed tail is still the tail.
+  while(true){
+    let pending=prefsSave;
+    let prefsOk=await pending;
+    if(pending!==prefsSave)continue;
+    if(!prefsOk){
+      pending=savePrefs();
+      prefsOk=await pending;
+      if(pending!==prefsSave)continue;
+    }
+    return prefsOk;
+  }
+}
+$("#sw-manager").onchange=()=>{renderManagerWarning();
+  savePrefs();};
+$("#sw-assign").onchange=()=>savePrefs();
+$("#sw-gate").onchange=()=>{
+  if($("#sw-gate").value==="ask")
+    hint("写盘任务开跑前会问你。注意：定时运行始终走自动模式，不受此开关影响");
+  savePrefs();
+};
+
+/* 选择题答案仍渲染成普通文本；结构化答案只是 /chat 的增量元数据。 */
+function normalizeChoiceAnswers(value){
+  if(!value||typeof value!=="object"||Array.isArray(value))return {};
+  const answers={};
+  for(const [key,answer] of Object.entries(value))
+    if(typeof key==="string"&&typeof answer==="string")
+      answers[key.slice(0,100)]=answer.slice(0,2000);
+  return answers;
+}
+function freezeOpenChoices(reason){
+  for(const message of S.preChat)
+    if(message.card&&message.card.kind==="choices"&&!message.card.frozen){
+      message.card.frozen=true;
+      if(reason)message.card.skipped=reason;
+    }
+}
+function submitChoices(card){
+  if(S.sendPending){hint("上一条消息仍在发送，请稍候");return;}
+  const lines=[];
+  for(const question of card.questions){
+    const answer=card.answers[question.id]||"";
+    const extra=card.answers["__other__"+question.id]||"";
+    if(!answer&&!extra)continue;
+    const options=question.options||[];
+    const chosen=options.find(option=>option.label===answer);
+    if(chosen&&chosen.other&&!extra){hint("选择“其他”后请补充说明");return;}
+    const rendered=(chosen&&chosen.other)||!options.length?(extra||answer):answer;
+    lines.push(question.question+"："+rendered);
+  }
+  if(!lines.length){hint("至少答一题，或者直接在输入框里说");return;}
+  if(!setPromptText(lines.join("\n")))return;
+  S.pendingChoiceAnswers=normalizeChoiceAnswers(card.answers);
+  card.frozen=true;
+  sendPrompt();
+}
+$("#prompt").addEventListener("input",autoGrow);
+$("#prompt").addEventListener("keydown",e=>{
+  // 中文等输入法组词时，回车是"确认候选词"而不是"发送"——isComposing 和
+  // 老浏览器的 keyCode 229 都是这个状态，必须放行让输入法自己处理
+  if(e.isComposing||e.keyCode===229)return;
+  if(e.key==="Enter"&&!e.shiftKey){e.preventDefault();sendPrompt();}});
+$("#send").onclick=sendPrompt;
+$("#cancel-run").onclick=async()=>{
+  if(!window.confirm("取消这次运行？已完成的任务保留，进行中的任务会中断——不算完成，也不算失败。"))return;
+  try{
+    const res=await fetch("/cancel",{method:"POST",headers:{"Content-Type":"application/json"},body:"{}"});
+    if(!res.ok){const data=await res.json().catch(()=>({}));hint("取消失败："+((data&&data.error)||res.status));}
+  }catch(_){hint("连不上 serve.py，无法取消");}
+};
+async function discardActiveDraft(){
+  const sessionId=S.chatSession;
+  if(!sessionId)return true;
+  try{
+    const response=await fetch("/chat/session/discard",{method:"POST",
+      headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({session_id:sessionId})});
+    const data=await response.json().catch(()=>({}));
+    if(!response.ok){
+      hint("无法新建目标："+((data&&data.error)||response.status));
+      return false;
+    }
+    if(S.chatSession!==sessionId){
+      hint("当前草稿已更新，没有清除新的会话");
+      return false;
+    }
+    return true;
+  }catch(_){
+    hint("连不上 serve.py，当前草稿没有被删除");
+    return false;
+  }
+}
+// This used to be `$("#new-btn").onclick=()=>{`; discard is asynchronous, so the
+// handler must now await server confirmation before changing any local draft state.
+$("#new-btn").onclick=async()=>{
+  if(S.sendPending){hint("上一条消息仍在发送，请稍候");return;}
+  // 判据是「有没有服务端草稿」，不是「在哪个模式」：S.chatSession 会跟着模式
+  // 切换活下来，带着 LIVE 草稿切到 DEMO 再点新目标，只看模式就会把服务端那份
+  // 丢在那儿，下一次 LIVE 发送必然 409。纯 DEMO 从来不设 chatSession（demo
+  // 分支在赋值之前就 return 了），discardActiveDraft() 会直接返回 true。
+  if(!(await discardActiveDraft()))return;
+  stopRestoredManagerPolling();
+  stopManagerProgress();
+  // 之前这里写的是 S.sessions.length-1（"最新一条已有会话"），可用户
+  // 平时本来就停在最新会话上（followLatest 默认 true），点了跟没点一样，
+  // 只是悄悄把输入框重新聚焦了一下——没有任何看得见的反馈，感觉像失灵。
+  // 真正的"新目标"应该是跳到"最新之后一个"这个空位（数组越界，故意的），
+  // renderChat() 会把这个当成"还没建会话、正在写"的状态显示欢迎页；
+  // 一旦经理真正建了新计划，plan_created 会把新会话推到这个位置上。
+  S.followLatest=true;S.activeIdx=S.sessions.length;
+  S.preChat=[];S.pendingGoal=null;S.chatSession=null;S.pendingChoiceAnswers=null;
+  S.drawer=null;S.preview=null;S.pvDiff=false;pvShown=null;$("#prompt").value="";autoGrow();$("#prompt").focus();renderAll();
+};
+function setPromptText(text){
+  if(S.sendPending){hint("上一条消息仍在发送，请稍候");return;}
+  const prompt=$("#prompt");prompt.value=text;autoGrow();prompt.focus();return true;
+}
+function sendText(t){
+  if(setPromptText(t))sendPrompt();
+}
+
+/* ---------- 经理思考进度（spec：见 CLAUDE.md §6.14） ----------
+   claude -p 的 thinking 块内容是空的（2026-08-31 复测），所以这里
+   **没有推理文本可展示**，只有推理的形状：想了几轮、读了什么、何时
+   开始写回复，以及每步耗时。绝不编造「经理正在考虑…」这类旁白。 */
+const MPROG_ICON=[[/思考/,"brain"],[/^Read\(/,"file-text"],
+  [/^(Write|Edit)\(/,"file-pen"],[/^Bash\(/,"terminal"],[/^Glob\(|^Grep\(/,"search"]];
+function mprogIcon(detail){
+  for(const [re,ic] of MPROG_ICON)if(re.test(detail))return ic;
+  return "sparkles";   // 其余（含正在成文的文本预览）
+}
+function renderManagerProgress(steps,startTs,live){
+  /* 耗时语义：on_event 在内容块**完成**时才触发，所以 steps[i].ts 是那一步
+     的结束时刻 —— 这一步花了多久 = 它的 ts 减去上一步的 ts（第一步减去本轮
+     开始时间）。用「下一步的 ts 减自己」是错的，那算的是下一步的时长。 */
+  const box=document.createElement("div");box.className="mprog";
+  const row=(detail,secs,cur)=>{
+    const r=document.createElement("div");r.className="st"+(cur?" cur":"");
+    const ic=document.createElement("i");ic.setAttribute("data-lucide",mprogIcon(detail));
+    ic.style.cssText="width:12px;height:12px;flex:none";
+    const d=document.createElement("span");d.className="d";
+    d.textContent=detail;                    // LLM 侧内容 -> textContent
+    const el=document.createElement("span");el.className="el";
+    el.textContent=Math.max(0,Math.round(secs))+"s";
+    r.append(ic,d,el);box.appendChild(r);
+  };
+  let prev=startTs;
+  for(const s of steps){row(s.detail,s.ts-prev,false);prev=s.ts;}
+  /* 还没结束的那一步：第一个 thinking 块要跑 8-10 秒才闭合，这段静默期
+     一个事件都没有 —— 正是最需要「它还活着」的时候。用本轮开始/上一步
+     到现在的时间填上，这是实测得到的真实数字，不是编的旁白。 */
+  if(live)row(steps.length?"继续思考…":"正在思考…",(Date.now()/1000)-prev,true);
+  return box;
+}
+function newSessionId(){
+  // 跟服务端同规格的 12 位十六进制；crypto 不可用时退回 Math.random
+  if(window.crypto&&crypto.getRandomValues){
+    const a=new Uint8Array(6);crypto.getRandomValues(a);
+    return [...a].map(b=>b.toString(16).padStart(2,"0")).join("");
+  }
+  return Math.random().toString(16).slice(2,14).padEnd(12,"0");
+}
+/* ---------- 轮询登记处 ----------
+   三条轮询原本各存各的句柄（let mprogTimer / let pollTimer /
+   S.restoredSessionTimer）、各写各的启停、各自决定要不要挂页面生命周期。
+   于是「pagehide 把它停了、却没人负责重新装上」这种缺陷只能一条一条犯 ——
+   那个把整个界面永久锁死的缺陷正是这么来的（见 §7 与 docs/decisions/
+   serve-and-frontend.md）。收成一处之后停与恢复是对称的：新加一条轮询
+   不可能只被停掉而不被恢复，因为两边都不再逐条点名。 */
+const Timers={
+  _h:Object.create(null),
+  start(name,fn,ms){this.stop(name);this._h[name]=setInterval(fn,ms);},
+  stop(name){const h=this._h[name];if(h!==undefined){clearInterval(h);delete this._h[name];}},
+  running(name){return this._h[name]!==undefined;},
+  stopAll(){for(const name of Object.keys(this._h))this.stop(name);},
+};
+
+function startManagerProgress(){
+  stopManagerProgress();
+  S.mgrProgress=[];S.mgrStart=Date.now()/1000;S.mgrLive=true;
+  Timers.start("progress",async()=>{
+    // 每秒都重绘：就算一个新步骤都没来，正在进行那一行的秒数也要往上走
+    try{
+      if(S.chatSession){
+        const r=await fetch("/chat/progress?session_id="+encodeURIComponent(S.chatSession));
+        if(r.ok)S.mgrProgress=(await r.json()).steps||[];
+      }
+    }catch(_){/* 轮询挂了只是看不到进度，对话本身不受影响 */}
+    renderAll();
+  },1000);
+}
+function stopManagerProgress(){
+  Timers.stop("progress");
+  S.mgrProgress=[];S.mgrLive=false;
+}
+
+function historyToChat(history){
+  const items=Array.isArray(history)?history:[];
+  return items.filter(item=>item&&typeof item==="object").map(item=>{
+    const message={role:item.role==="manager"?"manager":"user",
+      text:String(item.text||""),ts:Number(item.ts)||nowTs(),card:null};
+    const questions=(Array.isArray(item.questions)?item.questions:[])
+      .filter(q=>q&&typeof q==="object"&&q.question)
+      .map(q=>({id:String(q.id||"").slice(0,100),question:String(q.question||""),
+        options:(Array.isArray(q.options)?q.options:[])
+          .filter(o=>o&&typeof o==="object"&&o.label!=null)
+          .map(o=>({label:String(o.label||""),detail:String(o.detail||""),
+            other:o.other===true}))}));
+    if(questions.length&&questions.some(q=>q.options.length)){
+      message.text="";
+      message.card={kind:"choices",questions:questions,
+        answers:normalizeChoiceAnswers(item.answers),
+        frozen:item.answered===true};
+    }
+    return message;
+  });
+}
+
+// 返回值是「这份快照用上了没有」。调用方要靠它决定要不要开轮询：编号无效
+// 时直接开轮询，会让每个 tick 都走同一条 return 并再弹一次提示，1 秒一条，
+// 永远停不下来。
+function applyActiveSnapshot(active){
+  if(!active||typeof active!=="object")return false;
+  const sessionId=String(active.session_id||"");
+  if(!/^[a-f0-9]{12}$/.test(sessionId)){
+    hint("会话恢复失败：会话编号无效");
+    return false;
+  }
+  const followActive=S.followLatest||S.activeIdx<0||S.activeIdx===S.sessions.length;
+  const localOnly=S.preChat.filter(m=>m.local);
+  S.chatSession=sessionId;
+  S.sendPending=active.pending===true;
+  S.preChat=historyToChat(active.history);
+  if(active.pending)
+    S.preChat.push({role:"manager",text:"__typing__",ts:nowTs(),restoredPending:true});
+  S.preChat.push.apply(S.preChat,localOnly);
+  if(followActive){S.followLatest=true;S.activeIdx=S.sessions.length;}
+  return true;
+}
+
+function clearRestoredDraftState(){
+  S.preChat=S.preChat.filter(m=>m.local);
+  S.chatSession=null;S.sendPending=false;S.pendingChoiceAnswers=null;
+}
+
+async function restoreManagerSessions(){
+  S.restoringSessions=true;
+  try{
+    const response=await fetch("/chat/session/current",{cache:"no-store"});
+    if(!response.ok){
+      const error=await response.json().catch(()=>({}));
+      hint("会话恢复失败："+((error&&error.error)||response.status));
+      return;
+    }
+    const data=await response.json();
+    if(data.run&&/^[a-f0-9]{8}$/.test(String(data.run.run_id||""))){
+      S.managerChatsByRun[data.run.run_id]=historyToChat(data.run.history);
+    }
+    if(data.active){
+      if(applyActiveSnapshot(data.active)&&data.active.pending)startRestoredManagerPolling();
+      else{stopRestoredManagerPolling();stopManagerProgress();}
+    }else{
+      stopRestoredManagerPolling();stopManagerProgress();
+      clearRestoredDraftState();
+    }
+  }catch(_){
+    hint("会话恢复失败：连不上 serve.py");
+    /* boot continues; live polling will own the persistent disconnected state */
+  }finally{S.restoringSessions=false;}
+}
+
+/* ---------- restored pending turn ---------- */
+
+function stopRestoredManagerPolling(){
+  Timers.stop("session");
+}
+
+// 服务端答了但答的是错误（比如会话文件损坏 -> 500）是个持久状态，重试多少
+// 次都一样。不放弃的话就是：每秒一次请求、界面全禁用、一句提示都没有 ——
+// 跟「经理在慢慢想」长得一模一样。放弃时必须把 sendPending 放开，否则没人
+// 再能清它；真有一轮在飞，服务端的 _chat_inflight 会用 409 兜住重复发送。
+// 网络异常不计数：那是 pollLive 的职责，且经理一轮本来就要几十秒。
+let pollFail=0;
+async function pollRestoredManagerTurn(){
+  const expectedSession=S.chatSession;
+  try{
+    const response=await fetch("/chat/session/current",{cache:"no-store"});
+    if(!response.ok){
+      if(++pollFail>=5){
+        stopRestoredManagerPolling();stopManagerProgress();
+        S.sendPending=false;
+        hint("读不出会话状态（"+response.status+"）—— 刷新页面重试");
+        renderAll();
+      }
+      return;
+    }
+    pollFail=0;
+    const data=await response.json();
+    if(S.chatSession!==expectedSession)return;
+    if(data.run&&/^[a-f0-9]{8}$/.test(String(data.run.run_id||"")))
+      S.managerChatsByRun[data.run.run_id]=historyToChat(data.run.history);
+    if(data.active){
+      if(!applyActiveSnapshot(data.active)||!data.active.pending){
+        stopRestoredManagerPolling();
+        stopManagerProgress();
+      }
+    }else{
+      stopRestoredManagerPolling();
+      stopManagerProgress();
+      clearRestoredDraftState();
+    }
+    renderAll();
+  }catch(_){/* pollLive reports connectivity */}
+}
+
+function startRestoredManagerPolling(){
+  pollFail=0;
+  startManagerProgress();
+  Timers.start("session",pollRestoredManagerTurn,1000);
+}
+
+// 离开页面：三条一起停，不用记得哪条该停。
+window.addEventListener("pagehide",()=>Timers.stopAll());
+// bfcache 把整页冻住再原样恢复，boot() 不会重跑 —— 所以上面停掉的必须在
+// 这里对称地装回来，否则「进设置再返回」（本功能就是为它做的）之后
+// S.sendPending 永远清不掉，整个界面锁死，只能硬刷新。
+// live 是无状态轮询，直接重启；session/progress 的真相在服务端，所以走
+// restoreManagerSessions() 重新推导，而不是盲目重装一条可能已经过期的轮询。
+window.addEventListener("pageshow",e=>{
+  if(!e.persisted)return;
+  if(S.mode==="live")startLive();
+  restoreManagerSessions().then(renderAll);});
+
+async function sendPrompt(){
+  const ta=$("#prompt"),text=ta.value.trim();
+  const choiceAnswers=S.pendingChoiceAnswers;
+  if(!text||(S.busy&&S.mode==="live")||S.sendPending)return;
+  S.sendPending=true;renderAll();
+  try{
+  if(S.mode==="live"){
+    const prefsOk=await waitForPrefs();
+    if(!prefsOk){hint("设置尚未保存，已阻止启动；请确认连接后重试");return;}
+    ensureNotifyPermission();   // real user gesture: the
+    // only place Safari reliably shows the permission prompt (pollLive's
+    // setInterval callback is not a user gesture -- it would silently no-op)
+  }
+  ta.value="";autoGrow();
+  if(S.mode==="demo"){
+    S.pendingGoal={text:text,ts:nowTs()};S.followLatest=true;renderAll();
+    setTimeout(()=>demoRun(text),700);return;}
+  // @taskid ... -> deep follow-up on that task's agent session
+  const m=text.match(/^@(\S+)\s+([\s\S]+)$/);
+  S.followLatest=true;
+  freezeOpenChoices("你直接回复了");
+  S.preChat.push({role:"user",text:text,ts:nowTs()},{role:"manager",text:"__typing__",ts:nowTs()});
+  renderAll();
+  const drop=()=>{S.preChat=S.preChat.filter(x=>x.text!=="__typing__");};
+  try{
+    let res,data;
+    if(m){
+      res=await fetch("/task/"+encodeURIComponent(m[1])+"/message",{method:"POST",
+        headers:{"Content-Type":"application/json"},body:JSON.stringify({message:m[2]})});
+      data=await res.json();drop();
+      if(!res.ok){hint("追问失败："+((data&&data.error)||res.status));renderAll();return;}
+      if(data.queued===true){
+        S.preChat.push({role:"manager",ts:nowTs(),
+          text:"这条消息已排进队列——任务还在跑，agent 跑完这一轮会回复，届时会在这里看到。"});
+      }else{
+        S.preChat.push({role:"manager",text:data.reply||data.output||"（无回复）",ts:nowTs()});
+      }
+      renderAll();return;
+    }
+    // 第一轮必须由前端先生成 session id：进度轮询要靠它，而服务端的 id
+    // 只随「这一轮的响应」回来 —— 那时这一轮已经结束了，等于整个第一轮
+    // （最需要看进度的时候）什么都显示不了。服务端本来就接受客户端传的
+    // session_id（sid = body.get("session_id") or uuid4()）。
+    if(!S.chatSession)S.chatSession=newSessionId();
+    startManagerProgress();
+    const chatBody=JSON.stringify({session_id:S.chatSession,message:text,
+      choice_answers:choiceAnswers||{}});
+    S.pendingChoiceAnswers=null;
+    res=await fetch("/chat",{method:"POST",headers:{"Content-Type":"application/json"},
+      body:chatBody});
+    stopManagerProgress();
+    data=await res.json();drop();
+    if(!res.ok){hint("经理没接上："+((data&&data.error)||res.status));
+      await restoreManagerSessions();
+      // 服务端在落盘之前就拒了（忙/会话冲突）的话，这句话哪儿都不在了：
+      // 输入框上面清空过，乐观插入的那行又被快照覆盖掉。只留一个空输入框
+      // 和一句报错，等于让用户重打一遍。
+      if(!S.preChat.some(m=>m.role==="user"&&m.text===text)){ta.value=text;autoGrow();}
+      renderAll();return;}
+    S.chatSession=data.session_id;
+    if(data.status==="asking"){
+      const questions=(data.questions||[]).filter(q=>q&&q.question);
+      // 开放式问题没有选项时继续使用普通文本；只在真正可点击时显示卡片。
+      if(questions.length&&questions.some(q=>(q.options||[]).length))
+        S.preChat.push({role:"manager",text:"",ts:nowTs(),
+          card:{kind:"choices",questions:questions,answers:{},frozen:false}});
+      else
+        S.preChat.push({role:"manager",text:data.question,ts:nowTs()});
+    }
+    else if(data.status==="confirm")
+      S.preChat.push({role:"manager",ts:nowTs(),
+        text:"确认一下——\n目标："+data.goal+"\n约束："+(data.constraints||"（无）")+
+             "\n没问题回复“对/开始”；要改的话直接说哪里不对。"});
+    else if(data.status==="started"){stopRestoredManagerPolling();stopManagerProgress();
+      S.chatSession=null;
+      S.preChat.push({role:"manager",text:"收到，马上安排开工。",ts:nowTs()});
+      hint("已提交引擎，等待 Planner 拆解…");}
+    renderAll();
+  }catch(_){
+    stopManagerProgress();
+    drop();hint("连不上 serve.py —— 用 `python serve.py` 启动，或点右上角切到 DEMO");
+    // 发送失败本身就是最直接的断连证据：立刻亮指示，不用等轮询攒够 3 次
+    S.liveDown=true;renderLiveState();
+    renderAll();
+  }
+  }finally{
+    if(!Timers.running("session"))S.sendPending=false;
+    renderAll();
+  }
+}
+
+/* ---------- live polling ---------- */
+let liveFail=0;
+async function pollLive(){
+  let res;
+  try{
+    res=await fetch("events.jsonl?nocache="+Date.now(),{cache:"no-store"});
+  }catch(_){
+    // 只有 fetch 本身抛异常（网络层失败）才算"连不上 serve.py"。
+    // 拿到任何 HTTP 响应都说明服务端活着——404 是"这个项目还没跑过
+    // 任何 run"的正常状态，不能当断连（否则全新安装一进来就红着报
+    // "已断开"，而服务端其实好好的）。
+    onLiveDown();return;
+  }
+  markLiveUp();
+  if(!res.ok)return;    // 404 = 还没有 run，安静等着就行
+  try{
+    // per-run event files: when the server switches to a NEW run, its file
+    // can be SHORTER than the previous one -- the byte offset must reset
+    const runId=res.headers.get("X-AgentHub-Run")||"";
+    if(runId&&runId!==S.runId){S.runId=runId;S.seenBytes=0;}
+    const text=await res.text();
+    if(text.length>S.seenBytes){
+      const fresh=text.slice(S.seenBytes);S.seenBytes=text.length;
+      for(const line of fresh.split("\n")){if(!line.trim())continue;
+        try{ingest(JSON.parse(line))}catch(_){}}}
+  }catch(_){ /* 响应读到一半断了：下一轮会重来，不改断连状态 */ }
+}
+function markLiveUp(){
+  liveFail=0;
+  if(S.liveDown){S.liveDown=false;renderLiveState();hint("已重新连上 serve.py");}
+}
+function onLiveDown(){
+  // 连续 3 次失败 = serve.py 没了（进程退出/重启/机器睡醒）。
+  // 以前这里的提示挂了 `&&!S.sessions.length` 的条件——只要跑过一次
+  // 任务，服务端挂掉就完全静默：轮询每秒失败一次却什么都不显示，
+  // 界面还挂着旧状态像是一切正常，用户要等到发任务失败才发现。
+  // 现在无论有没有会话都亮断连指示；自动切 DEMO 仍然只在"还没有任何
+  // 会话"时做（有真实历史时切 DEMO 会拿假数据盖住真记录）。
+  if(++liveFail>=3&&!S.liveDown){
+    S.liveDown=true;renderLiveState();
+    if(!S.sessions.length&&!S.chatSession){
+      setMode("demo");hint("连不上 serve.py，已切 DEMO —— 直接在下方输入目标试试");}
+    else{
+      hint("跟 serve.py 断开了 —— 重新运行 python3 serve.py（或双击启动器）后会自动恢复");}
+  }
+}
+function renderLiveState(){
+  const b=$("#mode-btn");if(!b)return;
+  const down=S.liveDown&&S.mode==="live";
+  b.classList.toggle("down",down);
+  $("#mode-label").textContent=down?"已断开":(S.mode==="live"?"LIVE":"DEMO");
+  b.title=down?"连不上 serve.py：进程可能已退出。重新启动后会自动恢复。":"";
+}
+function startLive(){Timers.start("live",pollLive,1000);pollLive();}
+function setMode(m){S.mode=m;
+  // 手动切换模式时清掉断连状态：切到 DEMO 后"断开"不再有意义，切回 LIVE
+  // 要给它一次干净的重试机会（连不上的话 pollLive 会重新亮起来）
+  S.liveDown=false;liveFail=0;renderLiveState();
+  if(m==="live")startLive();else{
+    stopRestoredManagerPolling();stopManagerProgress();
+    Timers.stop("live");
+  }}
+$("#mode-btn").onclick=()=>setMode(S.mode==="live"?"demo":"live");
+
+/* ---------- demo ---------- */
+function demoRun(goal){
+  const T=[
+    {id:"arch",title:"架构与技术选型",type:"planning",depends_on:[]},
+    {id:"copy",title:"文案撰写",type:"writing",depends_on:[]},
+    {id:"art",title:"像素视觉素材",type:"image",depends_on:[]},
+    {id:"code",title:"编码实现",type:"coding",depends_on:["arch","copy","art"]},
+    {id:"qa",title:"猫头鹰质检",type:"review",depends_on:["code"]}];
+  const seq=[
+    [0,{type:"plan_created",goal:goal||"演示目标",tasks:T.map(t=>Object.assign({},t,{status:"pending"}))}],
+    [350,{type:"task_ready",task_id:"arch",title:T[0].title}],
+    [370,{type:"task_ready",task_id:"copy",title:T[1].title}],
+    [390,{type:"task_ready",task_id:"art",title:T[2].title}],
+    [700,{type:"task_started",task_id:"arch",title:T[0].title,agent:"cc-opus",animal:"owl",attempt:1}],
+    [820,{type:"task_started",task_id:"copy",title:T[1].title,agent:"or-deepseek",animal:"whale",attempt:1}],
+    [940,{type:"task_started",task_id:"art",title:T[2].title,agent:"or-glm",animal:"panda",attempt:1}],
+    [1700,{type:"agent_thinking",agent:"cc-opus",detail:"分析目标约束，评估最小可行方案…"}],
+    [2400,{type:"agent_thinking",agent:"or-deepseek",detail:"根据目标语气起草核心文案…"}],
+    [3100,{type:"agent_failed",task_id:"art",agent:"or-glm",error:"image model timeout after 60s",cost_usd:0.0006}],
+    [3500,{type:"task_started",task_id:"art",title:T[2].title,agent:"mock",animal:"robot",attempt:2}],
+    [4300,{type:"task_completed",task_id:"arch",agent:"cc-opus",cost_usd:0.0312,usage:{input_tokens:12400,output_tokens:2600},preview:"方案定稿：单文件、零构建、可直接分享"}],
+    [4900,{type:"task_completed",task_id:"copy",agent:"or-deepseek",cost_usd:0.0021,usage:{input_tokens:5200,output_tokens:1400},preview:"文案全套就绪"}],
+    [5500,{type:"task_completed",task_id:"art",agent:"mock",cost_usd:0,preview:"占位素材 6 张"}],
+    [5700,{type:"task_ready",task_id:"code",title:T[3].title}],
+    [6000,{type:"task_started",task_id:"code",title:T[3].title,agent:"cc-sonnet",animal:"corgi",attempt:1}],
+    [6900,{type:"agent_thinking",agent:"cc-sonnet",detail:"Write(index.html) — 组装区块，注入文案…"}],
+    [7400,{type:"blackboard_write",task_id:"code",agent:"cc-sonnet",key:"tasks/code/summary",preview:"组装区块，注入文案，本地烟测通过"}],
+    [7900,{type:"agent_thinking",agent:"cc-sonnet",detail:"本地烟测通过，零外链"}],
+    [8700,{type:"task_completed",task_id:"code",agent:"cc-sonnet",cost_usd:0.0480,usage:{input_tokens:18600,output_tokens:4900},preview:"实现完成：21KB 单文件",
+      // DEMO 的事件形状要跟真实后端一致（真事件带 files），这样文件行在
+      // DEMO 下也看得见；点开会诚实说明磁盘上并没有这些文件
+      files:[{path:"site/index.html",size:21504},{path:"README.md",size:1820}]}],
+    [8900,{type:"task_ready",task_id:"qa",title:T[4].title}],
+    [9200,{type:"task_started",task_id:"qa",title:T[4].title,agent:"cc-opus",animal:"owl",attempt:1}],
+    [10400,{type:"task_completed",task_id:"qa",agent:"cc-opus",cost_usd:0.0195,usage:{input_tokens:5000,output_tokens:900},preview:"PASS — 与规格一致"}],
+    [10800,{type:"run_finished",total_cost_usd:0.1014,statuses:{arch:"done",copy:"done",art:"done",code:"done",qa:"done"}}]];
+  for(const pair of seq)setTimeout(()=>ingest(Object.assign({ts:nowTs()},pair[1])),pair[0]);
+}
+
+/* ---------- boot ---------- */
+setTheme(S.theme);
+if(!localStorage.getItem("ah_theme")&&window.matchMedia&&
+   window.matchMedia("(prefers-color-scheme: light)").matches)setTheme("light");
+$("#strip").classList.toggle("collapsed",!S.strip);
+$("#strip-label").textContent=S.strip?"收起":"展开";
+syncTabs();sizeCanvas();loop();renderAll();icons();
+async function boot(){
+  await restoreManagerSessions();
+  renderAll();
+  loadWorkdir();
+  loadAgents();
+  setMode("live");
+}
+boot();
+setTimeout(()=>{sizeCanvas();icons();},400);
+</script>
+</body>
+</html>

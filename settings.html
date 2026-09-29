@@ -1,0 +1,803 @@
+<!DOCTYPE html>
+<html lang="zh" data-theme="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Agent Hub · 设置</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;800&family=Press+Start+2P&display=swap" rel="stylesheet">
+<style>
+:root[data-theme="dark"]{
+  --bg:#191817; --surface:#201f1e; --surface2:#2a2827; --raise:#302e2d;
+  --ink:#f0eeec; --dim:#a19d99; --line:#343130; --hair:#2c2a29;
+  --accent:#ff563c; --accent-ink:#201e1d; --accent-tint:rgba(255,86,60,.13);
+  --ok:#5fb87a; --warn:#e7b74a;
+}
+:root[data-theme="light"]{
+  --bg:#faf9f8; --surface:#f3f2f2; --surface2:#e9e7e6; --raise:#ffffff;
+  --ink:#201e1d; --dim:#6b6764; --line:#e0dedb; --hair:#eae8e6;
+  --accent:#ec3013; --accent-ink:#ffffff; --accent-tint:rgba(236,48,19,.09);
+  --ok:#2f8f52; --warn:#b58a1e;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--ink);font-family:Archivo,-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;
+  font-size:14px;line-height:1.6;-webkit-font-smoothing:antialiased}
+a{color:var(--accent);text-decoration:none}
+button{font:inherit;color:inherit;background:none;border:none;cursor:pointer}
+input{font:inherit;color:var(--ink);background:var(--surface2);border:1px solid var(--line);
+  border-radius:8px;padding:7px 10px;width:100%}
+textarea{font:inherit;color:var(--ink);background:var(--surface2);border:1px solid var(--line);
+  border-radius:8px;padding:7px 10px;width:100%;resize:vertical}
+.field select{max-width:140px}
+.wrap{max-width:680px;margin:0 auto;padding:32px 20px 80px}
+.head{display:flex;align-items:baseline;gap:12px;margin-bottom:6px}
+.head h1{font-size:20px;font-weight:800;letter-spacing:-.02em}
+.head .sub{font-size:12px;color:var(--dim)}
+.back{font-size:12.5px;color:var(--dim)}
+.back:hover{color:var(--ink)}
+.card{border:1px solid var(--line);border-radius:14px;background:var(--surface);padding:18px;margin-top:18px}
+.card h2{font-size:13.5px;font-weight:600;margin-bottom:12px;display:flex;align-items:center;gap:8px}
+.card h2 .tag{font-size:10.5px;color:var(--dim);font-weight:500}
+.row{display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--hair);font-size:13px}
+.row:last-child{border-bottom:none}
+.row .name{flex:1;min-width:0}
+.row .name b{font-weight:600}
+.row .name .d{font-size:11.5px;color:var(--dim);display:block}
+.pill{font-size:11px;padding:2px 9px;border-radius:999px;flex:none;font-weight:600}
+.pill.ok{color:var(--ok);background:color-mix(in srgb,var(--ok) 14%,transparent)}
+.pill.no{color:var(--accent);background:var(--accent-tint)}
+.pill.busy{color:var(--dim);background:var(--surface2)}
+.btn{display:inline-flex;align-items:center;gap:6px;padding:8px 14px;border-radius:9px;
+  background:var(--raise);border:1px solid var(--line);font-weight:500;font-size:13px}
+.btn:hover{background:var(--surface2)}
+.btn.primary{background:var(--accent);color:var(--accent-ink);border-color:transparent;font-weight:600}
+.btn.primary:hover{opacity:.88;background:var(--accent)}
+.btn.small{padding:4px 10px;font-size:11.5px}
+.btn:disabled{opacity:.45;cursor:default}
+.field{display:flex;align-items:center;gap:10px;margin-top:10px}
+.field label{flex:1;font-size:12.5px;color:var(--dim)}
+.field input{max-width:180px}
+.note{font-size:11.5px;color:var(--dim);margin-top:8px;line-height:1.55}
+.advice{border:1px solid var(--accent);border-radius:10px;padding:10px 12px;background:var(--accent-tint);
+  font-size:12.5px;margin-top:8px;display:flex;align-items:center;gap:10px}
+.advice .txt{flex:1}
+.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11.5px;color:var(--dim)}
+.runs{font-size:12.5px}
+.runs .r{display:flex;gap:10px;padding:6px 0;border-bottom:1px solid var(--hair)}
+.runs .r .st{flex:none;width:52px}
+.search-bar{display:flex;gap:8px;margin-bottom:10px}
+.search-bar input{flex:1}
+.search-hit{border-bottom:1px solid var(--hair);padding:7px 0;font-size:12.5px}
+.search-hit .tag{font-size:10px;color:var(--dim);margin-right:6px}
+.search-hit .sn{color:var(--ink)}
+.search-hit .meta{font-size:11px;color:var(--dim);margin-top:2px}
+.trend-row{display:flex;align-items:center;gap:10px;padding:5px 0;font-size:12px}
+.trend-row .lbl{flex:none;width:60px;color:var(--dim)}
+.trend-row .val{flex:none;width:130px;text-align:right;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--dim)}
+.bar{flex:1;height:5px;border-radius:999px;background:var(--surface2);overflow:hidden}
+.bar>i{display:block;height:100%;background:var(--accent);border-radius:999px}
+.hintbar{position:fixed;bottom:16px;left:50%;transform:translateX(-50%);background:var(--raise);
+  border:1px solid var(--line);border-radius:10px;padding:9px 16px;font-size:12.5px;box-shadow:0 8px 24px rgba(0,0,0,.3)}
+.hintbar.err{color:var(--accent)}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="head">
+    <h1>Agent Hub 设置</h1><span class="sub" id="meta"></span>
+    <span style="margin-left:auto"><a class="back" href="dashboard.html">← 回办公室</a></span>
+  </div>
+
+  <div class="card" id="card-project">
+    <h2>项目 <span class="tag">切换/新建需要重启服务才生效</span></h2>
+    <div class="row"><span class="name"><b>当前项目</b>
+      <span class="d" id="proj-current"></span></span></div>
+    <div id="proj-list"></div>
+    <div class="field">
+      <label>新建项目</label>
+      <input id="proj-new" placeholder="字母/数字/-/_，最多 64 字符">
+      <button class="btn small primary" id="proj-switch-new">新建并切换</button>
+    </div>
+    <div class="note">切换会立即关闭本机服务（等价于点"退出"），需要
+      重新双击启动器（或重新运行 <span class="mono">python3 serve.py</span>）
+      才能看到新项目——v1 不支持原地热切换，见设计文档。</div>
+  </div>
+
+  <div class="card" id="card-workdir">
+    <h2>工作区域 <span class="tag">交付物写进哪个文件夹 · 下次运行生效</span></h2>
+    <div class="row"><span class="name"><b>当前工作区域</b>
+      <span class="d mono" id="wk-current"></span></span>
+      <button class="btn small" id="wk-reveal">在访达中打开</button>
+    </div>
+    <div class="field">
+      <label>换成已有文件夹</label>
+      <input id="wk-path" placeholder="粘贴一个文件夹的绝对路径…">
+      <button class="btn small" id="wk-pick" title="macOS 弹系统选择器">选择文件夹…</button>
+      <button class="btn small primary" id="wk-save">保存</button>
+    </div>
+    <div class="field">
+      <label>不想用自定义了</label>
+      <button class="btn small" id="wk-reset">恢复默认</button>
+    </div>
+    <div class="note">工作区域是 agent 写交付物的文件夹。保存后<strong>下一次
+      运行</strong>开始，产出会直接写进你选的文件夹（正在跑的运行不受影响，
+      旧运行的交付物留在原目录，不会自动搬过去）。文件夹必须在数据目录之外，
+      避免跟运行记录混在一起。macOS 点「选择文件夹…」会弹系统选择器；其它
+      系统请手动粘贴路径。</div>
+  </div>
+
+  <div class="card" id="card-agents">
+    <h2>员工入职清单 <span class="tag">本机探测 · 零花费</span></h2>
+    <div id="agents"></div>
+    <button class="btn small" id="reprobe" style="margin-top:8px">重新探测</button>
+  </div>
+
+  <div class="card" id="card-tools">
+    <h2>工具权限 <span class="tag">只收紧 · 仅 claude_code · 下次 run 生效</span></h2>
+    <div id="tools"></div>
+    <div class="note">只能去掉工具、不能加回矩阵里没有的；全不勾会自动保留
+      Read（空字符串实测不会限制任何工具，Read 是验证过的最小集）。改动写入
+      本地 config.yaml 的 matrix_patch，下一次运行生效；codebuddy/dsh/
+      openrouter 不读这个字段。</div>
+  </div>
+
+  <div class="card" id="card-preflight">
+    <h2>真实体检 <span class="tag">每台机器跑一次 · 每个 agent 花几个 token</span></h2>
+    <div id="preflight"></div>
+    <button class="btn primary" id="run-preflight" style="margin-top:8px">开始体检</button>
+    <div class="note">体检会用真实调用验证每个 agent 对当前账号是否真的可用——存在性探测查不出"装了、登录了、但这个模型对这个账号不可用"（CLAUDE.md §4 的真实事故）。</div>
+  </div>
+
+  <div class="card" id="card-budget">
+    <h2>护栏金额 <span class="tag">你自己定 · 只对 openrouter 按量付费生效</span></h2>
+    <div class="field">
+      <label>max_usd_per_run（美元）</label>
+      <input id="budget" type="number" min="0" step="0.5">
+      <button class="btn small primary" id="save-budget">保存</button>
+    </div>
+    <div class="note">claude_code 订阅额度与 codebuddy 积分消耗不计入此护栏；dsh 暂无用量上报，也不计入。</div>
+  </div>
+
+  <div class="card" id="card-keys">
+    <h2>密钥 <span class="tag">只写本机文件 · 永不联网 · 不回显</span></h2>
+    <div class="field">
+      <label>DeepSeek API Key <span id="ds-state" class="pill"></span></label>
+      <input id="ds-key" type="password" placeholder="sk-…（留空 = 不修改）">
+      <button class="btn small primary" id="save-keys">保存</button>
+    </div>
+    <div class="field">
+      <label>OpenRouter API Key <span id="or-state" class="pill"></span></label>
+      <input id="or-key" type="password" placeholder="sk-or-…（留空 = 不修改）">
+    </div>
+    <div class="note">claude / workbuddy 走各家 CLI 登录（claude login / WorkBuddy 登录），不在这里配。</div>
+  </div>
+
+  <div class="card" id="card-demo">
+    <h2>零成本演示 <span class="tag">不需要任何 key</span></h2>
+    <button class="btn primary" id="demo-btn">跑一次演示（mock 模式，免费）</button>
+    <div class="note">30 秒内看到办公室动起来——第一次用的朋友先点这个。</div>
+  </div>
+
+  <div class="card" id="card-schedule">
+    <h2>定时目标 <span class="tag">best-effort · 仅在本应用开着时触发</span></h2>
+    <div id="schedules"></div>
+    <div class="field">
+      <label>名称</label>
+      <input id="sch-name" placeholder="每周周报">
+    </div>
+    <div style="margin-top:10px">
+      <label style="font-size:12.5px;color:var(--dim);display:block;margin-bottom:4px">目标</label>
+      <textarea id="sch-goal" rows="3" placeholder="生成本周工作总结，涵盖…"></textarea>
+    </div>
+    <div class="field">
+      <label>从模板预填（可选）</label>
+      <select id="sch-goal-tpl"><option value="">— 不使用模板 —</option></select>
+    </div>
+    <div class="field">
+      <label>频率</label>
+      <select id="sch-freq">
+        <option value="daily">每天</option>
+        <option value="weekly" selected>每周</option>
+      </select>
+      <select id="sch-weekday">
+        <option value="0">周一</option><option value="1">周二</option>
+        <option value="2">周三</option><option value="3">周四</option>
+        <option value="4">周五</option><option value="5">周六</option>
+        <option value="6">周日</option>
+      </select>
+      <input id="sch-time" type="time" value="09:00" style="max-width:140px">
+    </div>
+    <button class="btn small primary" id="save-schedule" style="margin-top:8px">新建定时目标</button>
+    <div class="note">只在 Agent Hub 开着的时候才会触发——不是系统级 cron，应用没开等于这次错过，不会补跑。触发时直接用保存的目标文本开工，没有经理追问澄清的机会，目标文本要写清楚、不依赖临场补充信息。</div>
+  </div>
+
+  <div class="card" id="card-runs">
+    <h2>运行历史 <span class="tag" id="runs-meta"></span></h2>
+    <div class="search-bar">
+      <input id="search-input" type="text" placeholder="搜索历史运行：目标 / 任务标题 / 笔记 / 交付文件名…">
+      <button class="btn small" id="search-btn">搜索</button>
+      <button class="btn small" id="search-clear" hidden>清除</button>
+    </div>
+    <div id="search-results" hidden></div>
+    <div class="runs" id="runs"></div>
+  </div>
+
+  <div class="card" id="card-trends">
+    <h2>成本趋势 <span class="tag">按天/按周聚合 · 复用上面这份运行历史，不发新请求</span></h2>
+    <div style="display:flex;gap:8px;margin-bottom:10px">
+      <button class="btn small primary" id="trend-day-btn">按天</button>
+      <button class="btn small" id="trend-week-btn">按周</button>
+    </div>
+    <div id="trend-rows"></div>
+    <div class="note" id="trend-summary"></div>
+    <div class="note">护栏只统计 openrouter 按量付费；claude_code 订阅与 codebuddy 积分消耗不计入，可能是实际花费大头（与 dashboard.html 成本面板的护栏文案一致）。补充：这里的 $ 来自每次 run 结束时的 total_cost_usd——openrouter 部分是真实账单；claude_code 部分是订阅账号下 CLI 自己按 API 价格换算出的参考值，不是真的从钱包划走的钱；codebuddy 积分、dsh（按量计费到你自己的 DEEPSEEK_API_KEY，但测不到）目前都固定记 0，完全不出现在这张图里。这张趋势图能看到的钱，通常远少于实际花的钱。</div>
+  </div>
+
+  <div class="card" id="card-backup">
+    <h2>备份数据 <span class="tag">普通文件 · 用你的系统工具复制即可</span></h2>
+    <div class="row">
+      <span class="name"><b>当前项目数据</b><span class="d mono" id="bk-runtime"></span></span>
+      <button class="btn small" id="bk-copy-runtime">复制路径</button>
+    </div>
+    <div class="note">这个项目的全部运行记录、配置——用 Finder / 资源管理器 /
+      rsync / Time Machine 直接复制这个文件夹就是完整备份，复制回原路径就是
+      完整恢复，都是普通文件。此路径<strong>不含凭证</strong>。</div>
+    <div class="advice" style="margin-top:10px">
+      <span class="txt">⚠️ 凭证文件：<span class="mono" id="bk-creds"></span>——
+        存的是你配置过的真实 API key，明文保存，权限 0600（只有你的账号能读）。
+        <strong>默认不要把它跟上面那个文件夹一起备份</strong>——一旦拷到 U 盘、
+        发邮件、同步进网盘，就丢失了 0600 权限的保护，key 明文就在别人可能
+        看到的地方了。只有你确实需要把密钥也带到新电脑时，才手动单独处理这
+        一个文件，且用加密方式传输（比如加密压缩包，或者到了新机器直接在设置
+        页里重新填一遍 key——重新配置往往比传输这个文件更安全）。</span>
+      <button class="btn small" id="bk-copy-creds">复制路径</button>
+    </div>
+    <div class="row">
+      <span class="name"><b>整个数据目录</b><span class="d mono" id="bk-datadir"></span></span>
+      <button class="btn small" id="bk-copy-datadir">复制路径</button>
+    </div>
+    <div class="note">整个数据目录 = 全部项目 + 凭证文件（会连密钥一起复制）。
+      恢复：把备份放回同一位置即可；放回自定义位置要用命令行
+      <span class="mono">python3 serve.py --data-dir &lt;你的路径&gt;</span> 启动，
+      双击启动器目前只认默认位置。</div>
+  </div>
+
+  <div class="card" id="card-about">
+    <h2>关于</h2>
+    <div class="mono" id="about"></div>
+    <div style="margin-top:10px"><a class="btn small" href="https://github.com" target="_blank" rel="noopener">检查更新（去仓库页面 git pull）</a></div>
+  </div>
+
+  <div class="card">
+    <h2>退出</h2>
+    <button class="btn" id="quit-btn">退出 Agent Hub（关闭本机服务）</button>
+    <div class="note">有任务在跑时会拒绝退出，先等任务结束。</div>
+  </div>
+</div>
+<div class="hintbar" id="hintbar" hidden></div>
+<script>
+"use strict";
+const $=q=>document.querySelector(q);
+// 引号必须一起转义——本页最直接的注入点是运行历史那颗"复制目标"按钮的
+// data-copy="…"：goal 文本可能是经理 LLM 生成的提案，带一个 " 就能闭合
+// 属性再塞事件属性进来。工具权限的 data-tool="…"、模板下拉的 value="…"
+// 同理。放在文本位置时 &quot; 照样渲染成 "，无副作用。
+const esc=s=>String(s==null?"":s).replace(/[&<>"']/g,
+  c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const ts=ts=>new Date(ts*1000).toLocaleString();
+let INFO=null;
+
+function hint(msg,err){
+  const h=$("#hintbar");h.textContent=msg;h.hidden=false;
+  h.className="hintbar"+(err?" err":"");
+  clearTimeout(hint._t);hint._t=setTimeout(()=>h.hidden=true,4000);
+}
+async function post(path,obj){
+  const res=await fetch(path,{method:"POST",headers:{"Content-Type":"application/json"},
+    body:JSON.stringify(obj)});
+  let data={};try{data=await res.json()}catch(_){}
+  if(!res.ok)throw new Error((data&&data.error)||res.status);
+  return data;
+}
+async function getJSON(path){
+  const res=await fetch(path);
+  if(!res.ok)throw new Error(res.status);
+  return res.json();
+}
+
+function setTheme(t){document.documentElement.dataset.theme=t;
+  try{localStorage.setItem("ah_theme",t)}catch(_){}}
+
+function pill(el,ok,txt){el.className="pill "+(ok?"ok":"no");el.textContent=txt;}
+
+function renderAgents(agents){
+  const box=$("#agents");box.innerHTML="";
+  for(const a of agents){
+    const d=document.createElement("div");d.className="row";
+    d.innerHTML='<span class="name"><b>'+esc(a.label)+'</b><span class="d">'+esc(a.detail)+'</span></span>'+
+      '<span class="pill '+(a.available?"ok":"no")+'">'+(a.available?"已就绪":"未安装")+'</span>';
+    box.appendChild(d);
+  }
+}
+
+function routesContaining(agentName,routes,tiers){
+  const out=[];
+  for(const [k,v] of Object.entries(routes||{}))if((v||[]).includes(agentName))out.push("routes."+k);
+  for(const [k,v] of Object.entries(tiers||{}))if((v||[]).includes(agentName))out.push("tiers."+k);
+  return out;
+}
+
+function removeAgentFromRoutes(name,routes,tiers){
+  const r={},t={};
+  for(const [k,v] of Object.entries(routes||{}))r[k]=(v||[]).filter(x=>x!==name);
+  for(const [k,v] of Object.entries(tiers||{}))t[k]=(v||[]).filter(x=>x!==name);
+  return {routes:r,tiers:t};
+}
+
+function renderPreflight(results){
+  const box=$("#preflight");box.innerHTML="";
+  if(!results){box.innerHTML='<div class="note">还没体检过——点“开始体检”跑一次真实探测。</div>';return;}
+  const entries=Object.entries(results||{});
+  if(!entries.length){box.innerHTML='<div class="note">矩阵里没有可体检的 agent（claude_code/codebuddy/dsh）。</div>';return;}
+  for(const [name,r] of entries){
+    const d=document.createElement("div");d.className="row";
+    d.innerHTML='<span class="name"><b>'+esc(name)+'</b><span class="d">'+
+      (r.ok?("可用 · $"+r.cost_usd):esc(r.error||"失败"))+'</span></span>'+
+      '<span class="pill '+(r.ok?"ok":"no")+'">'+(r.ok?"通过":"不可用")+'</span>';
+    box.appendChild(d);
+    if(!r.ok&&INFO){
+      const chains=routesContaining(name,INFO.routes,INFO.tiers);
+      if(chains.length){
+        const adv=document.createElement("div");adv.className="advice";
+        adv.innerHTML='<span class="txt">这个 agent 在降级链里：'+esc(chains.join("、"))+
+          '。留着它，每次任务都会先白撞一次失败的门再降级。</span>';
+        const b=document.createElement("button");b.className="btn small primary";
+        b.textContent="从所有降级链移除";
+        b.onclick=async()=>{
+          try{
+            const np=removeAgentFromRoutes(name,INFO.routes,INFO.tiers);
+            const patch=Object.assign({},INFO.matrix_patch||{},np);
+            await post("/settings/config",{matrix_patch:patch});
+            INFO=await getJSON("/settings");
+            hint("已移除 "+name+"，下次运行生效");
+            renderAll();
+          }catch(e){hint("移除失败："+e.message,true)}
+        };
+        adv.appendChild(b);
+        box.appendChild(adv);
+      }
+    }
+  }
+}
+
+function renderRuns(runs){
+  const box=$("#runs");box.innerHTML="";
+  if(!runs||!runs.length){box.innerHTML='<div class="note">还没有运行记录。</div>';return;}
+  const st={running:"运行中",done:"完成",failed:"有失败",crashed:"崩溃"};
+  for(const r of runs.slice().reverse()){
+    const d=document.createElement("div");d.className="r";
+    d.innerHTML='<span class="st pill '+(r.status==="done"?"ok":(r.status==="crashed"||r.status==="failed"?"no":"busy"))+'">'+
+      (st[r.status]||r.status)+'</span><span class="mono" style="flex:1">'+esc(r.goal||r.run_id)+'</span>'+
+      '<span class="mono">$'+((r.cost_usd||0)).toFixed(4)+'</span><span class="mono">'+ts(r.ts)+'</span>';
+    box.appendChild(d);
+  }
+}
+
+const SEARCH_KIND_ZH={goal:"目标",task_title:"任务标题",note:"笔记",file:"交付文件名"};
+
+const WD=["周一","周二","周三","周四","周五","周六","周日"];
+function fmtSchedule(s){
+  const hh=String(s.hour).padStart(2,"0"),mm=String(s.minute).padStart(2,"0");
+  return (s.freq==="weekly"?WD[s.weekday]+" ":"每天 ")+hh+":"+mm;
+}
+function fmtLastFired(s){
+  if(!s.last_fired_date)return "从未触发";
+  const st={fired:"已触发",missed:"已错过（应用当时没开/在跑别的任务）"};
+  return s.last_fired_date+" · "+(st[s.last_fired_status]||s.last_fired_status||"");
+}
+function renderBackup(info){
+  const NA="（未配置数据目录——当前不是桌面模式）";
+  $("#bk-runtime").textContent=info.runtime_dir||NA;
+  $("#bk-creds").textContent=info.credentials_path||NA;
+  $("#bk-datadir").textContent=info.data_dir||NA;
+  const on=!!info.data_dir;
+  $("#bk-copy-runtime").disabled=!on;
+  $("#bk-copy-creds").disabled=!on;
+  $("#bk-copy-datadir").disabled=!on;
+}
+$("#bk-copy-runtime").onclick=()=>{
+  if(navigator.clipboard&&INFO.runtime_dir)
+    navigator.clipboard.writeText(INFO.runtime_dir).then(()=>hint("路径已复制"));
+};
+$("#bk-copy-creds").onclick=()=>{
+  if(navigator.clipboard&&INFO.credentials_path)
+    navigator.clipboard.writeText(INFO.credentials_path).then(()=>hint("路径已复制"));
+};
+$("#bk-copy-datadir").onclick=()=>{
+  if(navigator.clipboard&&INFO.data_dir)
+    navigator.clipboard.writeText(INFO.data_dir).then(()=>hint("路径已复制"));
+};
+
+function renderWorkdir(info){
+  $("#wk-current").textContent=info.workdir||"（未配置数据目录——当前不是桌面模式）";
+  const on=!!info.data_dir;
+  $("#wk-pick").disabled=!on;
+  $("#wk-save").disabled=!on;
+  $("#wk-reset").disabled=!on;
+  $("#wk-reveal").disabled=!on;
+}
+async function refreshWorkdir(){
+  const info=await getJSON("/settings");
+  renderWorkdir(info);
+}
+$("#wk-pick").onclick=async()=>{
+  try{
+    const d=await post("/settings/pick-workdir",{});
+    if(d.cancelled){hint("已取消选择");return;}
+    if(d.path){$("#wk-path").value=d.path;hint("已选好，点「保存」生效");}
+  }catch(e){hint("选择失败："+e.message,true)}
+};
+$("#wk-save").onclick=async()=>{
+  const path=$("#wk-path").value.trim();
+  try{
+    const d=await post("/settings/workdir",{path:path});
+    $("#wk-path").value="";
+    $("#wk-current").textContent=d.workdir;
+    hint("工作区域已保存，下一次运行生效");
+  }catch(e){hint("保存失败："+e.message,true)}
+};
+$("#wk-reset").onclick=async()=>{
+  try{
+    const d=await post("/settings/workdir",{path:""});
+    $("#wk-path").value="";
+    $("#wk-current").textContent=d.workdir;
+    hint("已恢复默认工作区域");
+  }catch(e){hint("恢复失败："+e.message,true)}
+};
+$("#wk-reveal").onclick=async()=>{
+  try{await post("/settings/reveal-workdir",{});}
+  catch(e){hint("打开失败："+e.message,true)}
+};
+
+function renderTools(agents){
+  const box=$("#tools");box.innerHTML="";
+  if(!agents||!agents.length){box.innerHTML='<div class="note">矩阵里没有带工具权限的 claude_code agent。</div>';return;}
+  for(const a of agents){
+    const d=document.createElement("div");d.className="row";
+    d.style.flexWrap="wrap";
+    let chips="";
+    // 渲染 base（矩阵文件里的完整候选集），勾选态看 allowed（当前生效
+    // 的子集）——这样之前去掉的工具还能再勾回来，不会从界面上直接消失
+    const allowedSet=new Set(a.allowed);
+    for(const t of a.base){
+      const checked=allowedSet.has(t)?" checked":"";
+      chips+='<label style="display:inline-flex;align-items:center;gap:4px;margin-right:10px;font-size:12px">'+
+        '<input type="checkbox" data-tool="'+esc(t)+'"'+checked+'>'+esc(t)+'</label>';
+    }
+    d.innerHTML='<span class="name"><b>'+esc(a.name)+
+      (a.patched?' <span class="tag">已收紧过</span>':'')+
+      '</b><span class="d" style="margin-top:4px">'+chips+'</span></span>';
+    const b=document.createElement("button");b.className="btn small";b.textContent="保存";
+    b.onclick=()=>saveTools(a.name,d);
+    d.appendChild(b);
+    box.appendChild(d);
+  }
+}
+async function saveTools(agent,row){
+  const allowed=[];
+  row.querySelectorAll("input[data-tool]").forEach(c=>{if(c.checked)allowed.push(c.getAttribute("data-tool"));});
+  try{
+    const data=await post("/settings/tools",{agent:agent,allowed:allowed});
+    if(data.clamped)hint("已自动保留最小集 Read");
+    else hint("工具权限已保存，下次运行生效");
+    renderTools(data.agents);
+  }catch(e){hint("保存失败："+e.message,true)}
+}
+
+function renderProjects(cur,projects){
+  $("#proj-current").textContent=cur;
+  const box=$("#proj-list");box.innerHTML="";
+  for(const p of projects){
+    if(p.name===cur)continue;
+    const d=document.createElement("div");d.className="row";
+    d.innerHTML='<span class="name"><b>'+esc(p.name)+'</b><span class="d">'+
+      p.run_count+' 次运行'+(p.last_ts?(' · 最近 '+ts(p.last_ts)):'')+
+      '</span></span>';
+    const b=document.createElement("button");
+    b.className="btn small";b.textContent="切换";
+    b.onclick=()=>doSwitchProject(p.name);
+    d.appendChild(b);
+    box.appendChild(d);
+  }
+  if(!box.children.length)
+    box.innerHTML='<div class="note">还没有其他项目。</div>';
+}
+async function doSwitchProject(name){
+  if(!confirm('切换到项目 "'+name+'"？服务会立即关闭，需要重新打开 Agent Hub。'))
+    return;
+  try{
+    await post("/settings/switch-project",{project:name});
+    document.querySelector(".wrap").innerHTML=
+      '<div class="head"><h1>已切换到 '+esc(name)+'</h1></div>'+
+      '<div class="card"><div class="note">服务已关闭。请重新双击启动器'+
+      '（或重新运行 <span class="mono">python3 serve.py</span>）打开 '+
+      'Agent Hub，即可看到项目 "'+esc(name)+'"。</div></div>';
+  }catch(e){hint("切换失败："+e.message,true)}
+}
+
+function renderSchedules(schedules){
+  const box=$("#schedules");box.innerHTML="";
+  if(!schedules||!schedules.length){box.innerHTML='<div class="note">还没有定时目标。</div>';return;}
+  for(const s of schedules){
+    const d=document.createElement("div");d.className="row";
+    d.innerHTML='<span class="name"><b>'+esc(s.name)+'</b><span class="d">'+
+      esc(fmtSchedule(s))+' · '+esc(fmtLastFired(s))+' · '+esc(s.goal)+'</span></span>';
+    const del=document.createElement("button");del.className="btn small";del.textContent="删除";
+    del.onclick=async()=>{
+      if(!window.confirm("删除定时目标"+s.name+"？"))return;
+      try{await post("/schedules/delete",{id:s.id});hint("已删除");await renderAll();}
+      catch(e){hint("删除失败："+e.message,true)}
+    };
+    d.appendChild(del);
+    box.appendChild(d);
+  }
+}
+function renderSchTplOptions(templates){
+  const sel=$("#sch-goal-tpl");if(!sel)return;
+  // 空库时别只留一行"不使用模板"让人猜：直接说清楚模板去哪建
+  const first=(templates&&templates.length)
+    ?"— 不使用模板 —"
+    :"还没有模板——先回办公室页，在输入框写好目标后点「存为模板」";
+  sel.innerHTML='<option value="">'+esc(first)+'</option>'+
+    (templates||[]).map(t=>'<option value="'+esc(t.id)+'">'+esc(t.name)+'</option>').join("");
+}
+function syncFreqUI(){$("#sch-weekday").style.display=$("#sch-freq").value==="weekly"?"":"none";}
+
+function renderSearchResults(data){
+  const box=$("#search-results");box.innerHTML="";
+  box.hidden=false;
+  $("#runs").hidden=true;
+  $("#search-clear").hidden=false;
+  const head=document.createElement("div");head.className="note";
+  head.textContent="共扫描 "+data.total_runs_scanned+" 次运行";
+  box.appendChild(head);
+  if(!data.results||!data.results.length){
+    const d=document.createElement("div");d.className="note";
+    d.textContent="没有找到匹配的运行记录。";
+    box.appendChild(d);return;
+  }
+  const st={running:"运行中",done:"完成",failed:"有失败",crashed:"崩溃"};
+  for(const r of data.results){
+    const d=document.createElement("div");d.className="search-hit";
+    const pill='<span class="pill '+(r.status==="done"?"ok":(r.status==="crashed"||r.status==="failed"?"no":"busy"))+'">'+
+      (st[r.status]||r.status)+'</span>';
+    let act="";
+    if(r.matched_in==="file"&&r.task_id){
+      act='<a class="btn small" target="_blank" rel="noopener" href="/file?task='+
+        encodeURIComponent(r.task_id)+"&path="+encodeURIComponent(r.snippet)+'">打开/下载</a>';
+    }else if(r.goal){
+      act='<button class="btn small" data-copy="'+esc(r.goal)+'">复制目标</button>';
+    }
+    let goalLine="";
+    if(r.matched_in!=="goal"&&r.goal)goalLine='<div class="meta">'+esc(r.goal)+'</div>';
+    d.innerHTML=pill+'<span class="tag">'+esc(SEARCH_KIND_ZH[r.matched_in]||r.matched_in)+
+      '</span><span class="sn">'+esc(r.snippet)+'</span>'+
+      '<span class="meta" style="float:right">'+ts(r.ts)+'</span>'+
+      goalLine+'<div style="margin-top:4px;display:flex;gap:8px;align-items:center">'+act+'</div>';
+    box.appendChild(d);
+  }
+  if(data.truncated){
+    const d=document.createElement("div");d.className="note";
+    d.textContent="结果超过 200 条，已截断——换个更精确的词。";
+    box.appendChild(d);
+  }
+  box.querySelectorAll("[data-copy]").forEach(b=>{
+    b.onclick=()=>{
+      try{navigator.clipboard.writeText(b.getAttribute("data-copy"));hint("已复制目标文本");}
+      catch(e){hint("复制失败："+e.message,true)}
+    };
+  });
+}
+
+async function runSearch(){
+  const q=$("#search-input").value.trim();
+  if(!q){hint("输入要搜的词");return;}
+  try{
+    const data=await getJSON("/settings/search?q="+encodeURIComponent(q));
+    renderSearchResults(data);
+  }catch(e){hint("搜索失败："+e.message,true)}
+}
+function clearSearch(){
+  $("#search-input").value="";
+  $("#search-results").hidden=true;
+  $("#search-clear").hidden=true;
+  $("#runs").hidden=false;
+}
+
+const TREND_WINDOW={day:14,week:8};
+let TREND_GRANULARITY="day";
+
+function pad2(n){return n<10?"0"+n:""+n;}
+
+function mondayOf(d){
+  const day=(d.getDay()+6)%7;   // 0=周一..6=周日，本地时区
+  return new Date(d.getFullYear(),d.getMonth(),d.getDate()-day);
+}
+
+function bucketOf(ts,granularity){
+  const d=new Date(ts*1000);
+  if(granularity==="week"){
+    const m=mondayOf(d);
+    return {key:m.getFullYear()+"-"+pad2(m.getMonth()+1)+"-"+pad2(m.getDate()),
+            label:pad2(m.getMonth()+1)+"/"+pad2(m.getDate())+" 周"};
+  }
+  return {key:d.getFullYear()+"-"+pad2(d.getMonth()+1)+"-"+pad2(d.getDate()),
+          label:pad2(d.getMonth()+1)+"/"+pad2(d.getDate())};
+}
+
+function computeTrend(runs,granularity){
+  const byKey={};
+  for(const r of (runs||[])){
+    const ts=Number(r.ts);
+    if(!ts)continue;   // 防御性跳过没有合法 ts 的条目，不让脏数据炸掉分桶
+    const b=bucketOf(ts,granularity);
+    if(!byKey[b.key])byKey[b.key]={key:b.key,label:b.label,cost:0,count:0};
+    byKey[b.key].cost+=Number(r.cost_usd)||0;
+    byKey[b.key].count+=1;
+  }
+  const list=Object.values(byKey).sort((a,b)=>a.key<b.key?-1:(a.key>b.key?1:0));
+  const win=TREND_WINDOW[granularity]||14;
+  return list.slice(-win);
+}
+
+function renderTrend(){
+  const box=$("#trend-rows");box.innerHTML="";
+  const buckets=computeTrend(INFO&&INFO.runs,TREND_GRANULARITY);
+  $("#trend-day-btn").className="btn small"+(TREND_GRANULARITY==="day"?" primary":"");
+  $("#trend-week-btn").className="btn small"+(TREND_GRANULARITY==="week"?" primary":"");
+  if(!buckets.length){
+    box.innerHTML='<div class="note">还没有运行记录，暂无法生成趋势。</div>';
+    $("#trend-summary").textContent="";
+    return;
+  }
+  const maxCost=Math.max(0.0001,...buckets.map(b=>b.cost));
+  let totalCost=0,totalCount=0;
+  for(const b of buckets){
+    totalCost+=b.cost;totalCount+=b.count;
+    const pct=Math.round(b.cost/maxCost*100);
+    const row=document.createElement("div");row.className="trend-row";
+    row.innerHTML='<span class="lbl">'+esc(b.label)+'</span>'+
+      '<span class="bar"><i style="width:'+pct+'%"></i></span>'+
+      '<span class="val">$'+b.cost.toFixed(4)+' · '+b.count+' 次</span>';
+    box.appendChild(row);
+  }
+  $("#trend-summary").textContent="窗口内共 "+totalCount+" 次运行 · 合计 $"+totalCost.toFixed(4);
+}
+
+async function renderAll(){
+  INFO=await getJSON("/settings");
+  $("#meta").textContent="v"+INFO.version+(INFO.commit?" · "+INFO.commit:"")+" · "+INFO.data_dir;
+  renderBackup(INFO);
+  renderWorkdir(INFO);
+  $("#about").textContent="data_dir: "+INFO.data_dir+"\nproject: "+INFO.project+
+    "\nport: "+INFO.port+" · busy: "+INFO.busy+"\nversion: "+INFO.version+
+    (INFO.commit?" · commit "+INFO.commit:"");
+  renderAgents(INFO.agents);
+  $("#budget").value=INFO.budget;
+  $("#runs-meta").textContent=(INFO.runs||[]).length+" 次运行";
+  renderRuns(INFO.runs);
+  renderTrend();
+  renderPreflight(INFO.preflight&&INFO.preflight.results);
+  renderSchedules(INFO.schedules);
+  renderSchTplOptions(INFO.templates);
+  const proj=await getJSON("/settings/projects");
+  renderProjects(proj.current,proj.projects);
+  const tools=await getJSON("/settings/tools");
+  renderTools(tools.agents);
+  $("#ds-state").className="pill "+(INFO.credentials.deepseek?"ok":"no");
+  $("#ds-state").textContent=INFO.credentials.deepseek?"已配置":"未配置";
+  $("#or-state").className="pill "+(INFO.credentials.openrouter?"ok":"no");
+  $("#or-state").textContent=INFO.credentials.openrouter?"已配置":"未配置";
+  $("#run-preflight").disabled=INFO.busy;
+  $("#demo-btn").disabled=INFO.busy;
+  $("#quit-btn").disabled=INFO.busy;
+}
+
+$("#reprobe").onclick=async()=>{
+  try{renderAgents((await getJSON("/settings/agents")).agents);hint("已重新探测");}
+  catch(e){hint("探测失败："+e.message,true)}
+};
+$("#run-preflight").onclick=async()=>{
+  $("#run-preflight").disabled=true;$("#run-preflight").textContent="体检中…（会花几个 token）";
+  try{
+    const r=await post("/settings/preflight",{});
+    $("#run-preflight").textContent="重新体检";
+    await renderAll();
+    hint("体检完成");
+  }catch(e){
+    $("#run-preflight").disabled=false;$("#run-preflight").textContent="开始体检";
+    hint("体检失败："+e.message,true);
+  }
+};
+$("#save-budget").onclick=async()=>{
+  try{
+    const b=parseFloat($("#budget").value);
+    if(!isFinite(b)||b<0)throw new Error("金额必须是 ≥0 的数字");
+    await post("/settings/config",{budget:b});
+    hint("护栏金额已保存为 $"+b+"（下次运行生效）");
+  }catch(e){hint("保存失败："+e.message,true)}
+};
+$("#save-keys").onclick=async()=>{
+  try{
+    const body={};
+    const ds=$("#ds-key").value.trim(),or=$("#or-key").value.trim();
+    if(ds)body.deepseek=ds;
+    if(or)body.openrouter=or;
+    if(!ds&&!or){hint("两个输入框都空着，没有改动");return;}
+    await post("/settings/credentials",body);
+    $("#ds-key").value="";$("#or-key").value="";
+    hint("密钥已保存到本机（不会联网、不会回显）");
+    await renderAll();
+  }catch(e){hint("保存失败："+e.message,true)}
+};
+$("#demo-btn").onclick=async()=>{
+  try{
+    // mock + plan（不能用 goal：mock 模式下 Planner 拿到的也是假输出，解析不了）
+    await post("/run",{plan:"example_plan.json",mock:true});
+    hint("演示已开始，去办公室看小动物干活");
+    setTimeout(()=>location.href="dashboard.html",800);
+  }catch(e){hint("演示启动失败："+e.message,true)}
+};
+$("#quit-btn").onclick=async()=>{
+  try{
+    await post("/shutdown",{});
+    hint("服务已退出，可以关掉这个页面了");
+    $("#quit-btn").disabled=true;
+  }catch(e){hint("退出失败："+e.message,true)}
+};
+$("#trend-day-btn").onclick=()=>{TREND_GRANULARITY="day";renderTrend();};
+$("#trend-week-btn").onclick=()=>{TREND_GRANULARITY="week";renderTrend();};
+$("#search-btn").onclick=runSearch;
+$("#search-input").addEventListener("keydown",e=>{
+  if(e.isComposing||e.keyCode===229)return;   // 输入法组词中的回车不是"搜索"
+  if(e.key==="Enter")runSearch();
+});
+$("#search-clear").onclick=clearSearch;
+$("#sch-freq").onchange=syncFreqUI;
+syncFreqUI();
+$("#sch-goal-tpl").onchange=()=>{
+  const id=$("#sch-goal-tpl").value;if(!id)return;
+  const t=(INFO.templates||[]).find(x=>x.id===id);
+  if(t)$("#sch-goal").value=t.text;
+};
+$("#save-schedule").onclick=async()=>{
+  try{
+    const name=$("#sch-name").value.trim();
+    const goal=$("#sch-goal").value.trim();
+    const freq=$("#sch-freq").value;
+    const [hh,mm]=($("#sch-time").value||"09:00").split(":").map(Number);
+    if(!name||!goal)throw new Error("名称和目标都不能为空");
+    const body={name,goal,freq,hour:hh,minute:mm};
+    if(freq==="weekly")body.weekday=parseInt($("#sch-weekday").value,10);
+    await post("/schedules",body);
+    $("#sch-name").value="";$("#sch-goal").value="";
+    hint("已新建定时目标");
+    await renderAll();
+  }catch(e){hint("保存失败："+e.message,true)}
+};
+$("#proj-switch-new").onclick=()=>{
+  const name=$("#proj-new").value.trim();
+  if(!/^[A-Za-z0-9_-]{1,64}$/.test(name)){
+    hint("项目名只能是字母/数字/-/_，最多 64 字符",true);return;
+  }
+  doSwitchProject(name);
+};
+
+try{const t=localStorage.getItem("ah_theme");if(t)setTheme(t);}catch(_){}
+renderAll().catch(e=>{
+  hint("连不上 serve.py —— 用 python3 serve.py 启动，或从 dashboard 顶部“设置”进入",true);
+  $("#agents").innerHTML='<div class="note">需要 serve.py 在跑才能读到设置。</div>';
+});
+</script>
+</body>
+</html>
