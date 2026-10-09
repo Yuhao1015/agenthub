@@ -1,14 +1,14 @@
 """写盘任务门（spec §3.8）。
 
-判据表：
+判据表（hub/router.py agent_can_write，写盘门、写锁、追问拦截共用）：
   claude_code -> allowed_tools 含 Edit/Write/Bash
-  codebuddy   -> 一律算写盘
   codex       -> 一律算写盘
   dsh         -> 一律算写盘
+  codebuddy   -> 不算：两条执行路径都带 --tools ""，2026-07-21 实测会关掉全部工具
   openrouter  -> 不算（纯 HTTP 文本补全，不碰盘）
   mock        -> 不算
 
-codebuddy/dsh 是全权 agent，Agent Hub 对它们的工具权限没有任何可见性，
+codex/dsh 是全权 agent，Agent Hub 对它们的工具权限没有任何可见性，
 所以保守地全当写盘 —— 而不是假装能判断。
 
 无框架，纯 assert。零 LLM 调用。
@@ -143,11 +143,43 @@ def test_claude_code_read_only_does_not_open_gate():
     assert ex.calls == ["t1"]
 
 
-def test_codebuddy_codex_and_dsh_always_gate():
+def test_codex_and_dsh_always_gate():
     """全权 agent，工具权限对 Agent Hub 不可见，保守当写盘。"""
-    for kind in ("codebuddy", "codex", "dsh"):
+    for kind in ("codex", "dsh"):
         plan, ex, gates = _run_with(kind, "", reply={"decision": "approve"})
         assert len(gates) == 1, f"{kind} 应该一律开门，got {gates}"
+
+
+def test_codebuddy_never_gates():
+    """B19 的一半：codebuddy 两条执行路径都带 --tools ""（2026-07-21 实测会关掉
+    全部工具），它根本写不了盘，以前却被当成全权 agent 白白弹写盘门。"""
+    plan, ex, gates = _run_with("codebuddy", "")
+    assert gates == [], gates
+    assert ex.calls == ["t1"]
+
+
+def test_agent_can_write_table():
+    from hub.router import agent_can_write
+    assert agent_can_write("claude_code", "Read, Edit") is True
+    assert agent_can_write("claude_code", ["Read", "Bash"]) is True
+    assert agent_can_write("claude_code", "Read") is False
+    assert agent_can_write("claude_code", "") is False
+    for kind in ("codex", "dsh"):
+        assert agent_can_write(kind, "") is True, kind
+    for kind in ("codebuddy", "openrouter", "mock", ""):
+        assert agent_can_write(kind, "Read,Write,Bash") is False, kind
+
+
+def test_router_can_write_reads_the_declared_matrix():
+    """--mock 换掉了执行器，但判断看矩阵里声明的类型，所以 mock 也能预演写锁。"""
+    from hub.router import Router
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    router = Router(os.path.join(root, "hub", "capability_matrix.yaml"),
+                    workdir=".", mock_all=True)
+    expected = {"cc-sonnet": True, "cc-opus": False, "codex-local": True,
+                "cc-glm-strong": False, "dsh-pro": True, "or-deepseek": False}
+    got = {name: router.can_write(name) for name in expected}
+    assert got == expected, got
 
 
 def test_openrouter_and_mock_never_gate():

@@ -26,15 +26,19 @@ naturally reruns only what's STALE, restoring everything else unchanged.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import os
+import sys
 import uuid
 
+from . import checkpoints, run_changes
 from .artifacts import changed_files, snapshot
 from .blackboard import Blackboard
+from .connection_store import file_lock
 from .conversation import estimate_context_usage_ratio
 from .executors import ClaudeCodeExecutor
 from .models import EventBus, Plan, Task, TaskStatus, TaskType
-from .router import Router
+from .router import Router, agent_can_write
 from .summarizer import SUMMARIZE_TRIGGER_LEN, summarize
 
 MAX_OUTPUT_CTX = 4000     # cap when falling back to raw output
@@ -48,11 +52,50 @@ AWAITING_INPUT_TIMEOUT = 600.0      # default seconds of silence before auto-fin
                                      # budget.awaiting_input_timeout_sec
 GATE_POLL_INTERVAL = 1.0    # 门的轮询比 AWAITING_INPUT_POLL_INTERVAL(3s) 快，
                              # 因为门后面站着一个正在等的人
-WRITE_TOOLS = {"Edit", "Write", "Bash"}      # claude_code 的写盘工具
-ALWAYS_WRITE_KINDS = {"codebuddy", "codex", "dsh"}  # 全权 agent：自带 tools/skills，
-                                              # Agent Hub 对它们的工具权限没有
-                                              # 任何可见性，保守当写盘处理
-                                              # （宁可多问，不装作能判断）
+
+
+class _WriteHold:
+    """一个任务对写锁的持有，以及它在锁里拍的前后检查点（change-safety-net.md §4）。
+    会写的 agent 真正开跑前拿到，任务结束（完成、失败，或 @追问的等待循环结束）
+    才放；前后检查点都在锁里拍，所以改动能精确归到这个任务头上。"""
+
+    def __init__(self, engine: "Engine", task: Task):
+        self._engine = engine
+        self._task = task
+        self.held = False
+        self._finished = False
+        self._before_done = False   # before 检查点是不是真的拍完了（round-1 (c)）
+
+    async def take(self) -> None:
+        await self._engine.write_lock.acquire()
+        self.held = True
+        if self._task.status is TaskStatus.SKIPPED:
+            # 排队等锁的时候，这个任务可能已经被别的任务门被取消时的
+            # _skip_all_pending() 标成 SKIPPED 了：不会再跑，不拍检查点
+            # （round-1 (a)）
+            return
+        await self._engine._task_checkpoint(self._task, "before")
+        # 标记放在 await 之后，不是之前：取消发生在这一行 await 期间时，
+        # 这一行根本不会跑到，finish() 就不会去拍一个没有对应 before 的
+        # after（round-1 (c)）
+        self._before_done = True
+
+    async def finish(self):
+        """after 检查点，只拍一次，且只在 before 真的拍完时才拍；返回这个任务的
+        改动计数（没有检查点、被跳过，或 before 没拍完就是 None）。"""
+        if not self.held or self._finished or not self._before_done:
+            return None
+        self._finished = True
+        return await self._engine._task_checkpoint(self._task, "after")
+
+    async def release(self) -> None:
+        if not self.held:
+            return
+        try:
+            await self.finish()
+        finally:
+            self.held = False
+            self._engine.write_lock.release()
 
 
 class Engine:
@@ -60,7 +103,8 @@ class Engine:
                  board: Blackboard, max_parallel: int = 3, resume: bool = False,
                  preflight: bool = True, constraints: str = "",
                  summarize_enabled: bool = True, workdir: str = ".",
-                 gate_mode: str = "auto", assign_mode: str = "auto"):
+                 gate_mode: str = "auto", assign_mode: str = "auto",
+                 checkpoint_seg=None, checkpoint_status=None):
         self.plan = plan
         self.router = router
         self.bus = bus
@@ -78,7 +122,11 @@ class Engine:
         # asyncio.run() calls in one process). Deferring construction to
         # first use inside an async method sidesteps that entirely.
         self._sem: asyncio.Semaphore | None = None
-        self.total_cost = 0.0   # combined USD, for reporting
+        self._write_lock: asyncio.Lock | None = None   # 同上，懒创建（spec §4 写锁）
+        ledger = getattr(router, 'paid_ledger', None)
+        self.total_cost = ledger.spent_usd if ledger else 0.0  # includes planner/manager seed once
+        self._api_cost_at_start = self.total_cost
+        self._api_recorded_at_start = ledger.recorded_usd if ledger else 0.0
         self.total_credits = 0.0  # combined workbuddy/codebuddy credits, separate ledger
         self.paid_cost = 0.0    # pay-as-you-go only; this is what max_usd_per_run gates
         self.resume = resume
@@ -89,6 +137,14 @@ class Engine:
         self.gate_mode = gate_mode
         # "auto" | "manual"：模型由路由决定还是用户在计划门上钉
         self.assign_mode = assign_mode
+        # 改动安全网（change-safety-net.md §3）：main.py 拍好基线后交进来的这一段，
+        # 以及 plan_created 要带的 {on, reason}。都是 None = 这次不拍检查点
+        self.checkpoint_seg = checkpoint_seg
+        self.checkpoint_status = checkpoint_status
+        # 拍检查点时丢进后台线程跑 git 的那些任务：取消协程本身不会让线程停下来
+        # （Python 线程杀不掉），run() 收尾拍检查点之前必须能挨个等到，不然它还在
+        # 跑 git 的时候收尾快照也在同一个库上跑 git，两边打架（round-1 (b)）
+        self._checkpoint_threads: set[asyncio.Task] = set()
         # reverse dependency index: task id -> "does some other task depend
         # on it?" -- computed once so _run_task() can skip summarizing
         # leaf/terminal tasks nobody will ever read the summary of
@@ -101,6 +157,12 @@ class Engine:
         if self._sem is None:
             self._sem = asyncio.Semaphore(self._max_parallel)
         return self._sem
+
+    @property
+    def write_lock(self) -> asyncio.Lock:
+        if self._write_lock is None:
+            self._write_lock = asyncio.Lock()
+        return self._write_lock
 
     # ---------- startup: probe every local CLI agent once ----------
     async def _run_preflight(self) -> None:
@@ -135,7 +197,11 @@ class Engine:
 
     # ---------- blackboard-backed context ----------
     def _context_for(self, task: Task) -> str:
-        parts = []
+        parts = ["## Execution status (from the orchestrator)\n"
+                 "The initial goal-start confirmation is already complete. Execute "
+                 "this assigned task without asking for that same confirmation again. "
+                 "This does not waive any separate approval required by the user "
+                 "before a later action."]
         goal = self.board.get("goal/statement")
         if goal:
             parts.append(f"## Goal\n{goal}")
@@ -169,6 +235,10 @@ class Engine:
     # resumed ones (reactive AWAITING_INPUT loop) ----------
     def _persist_turn(self, task: Task, agent_name: str, executor, result) -> None:
         task.result = result.output
+        spec = self.board.get(f"tasks/{task.id}/spec") or {}
+        if spec.get('pinned_agent') == agent_name and spec.get('execution_options'):
+            task.pinned_agent = agent_name
+            task.execution_options = dict(spec['execution_options'])
         self.board.put(f"tasks/{task.id}/output", result.output,
                        author=agent_name, task_id=task.id, kind="output")
         self.board.put(f"tasks/{task.id}/agent", agent_name,
@@ -184,13 +254,45 @@ class Engine:
     # DONE. Called either immediately (nobody messaged this task while it
     # ran -- the overwhelming common case) or after an AWAITING_INPUT loop
     # wraps up (finish signal or timeout) ----------
+    async def _run_in_thread(self, fn, *args):
+        """asyncio.to_thread(...)，但登记进 self._checkpoint_threads、且用
+        asyncio.shield 包一层：调用方的协程被取消，不会让这个后台线程停下来
+        （Python 线程杀不掉，这个 git 子进程会一直跑到自己结束）；shield 让
+        取消只在调用方这一侧生效（CancelledError 照样从这里抛出去，调用方
+        正常展开），线程本身继续独立跑，直到 run() 收尾前的 gather 真正等到它
+        （round-1 (b)）。"""
+        t = asyncio.create_task(asyncio.to_thread(fn, *args))
+        self._checkpoint_threads.add(t)
+        t.add_done_callback(self._checkpoint_threads.discard)
+        return await asyncio.shield(t)
+
+    async def _task_checkpoint(self, task: Task, when: str):
+        """会写盘任务的前/后检查点（change-safety-net.md §3.2）：git 放线程里跑，
+        别卡住其他任务的事件流；黑板回到事件循环上写。返回 after 时这个任务的
+        改动计数，其余情况 None。永不抛异常：安全网不能反过来弄坏它护着的任务，
+        但会往 stderr 打一行——安全网自己悄悄失效是最糟的一种失败。"""
+        seg = self.checkpoint_seg
+        if seg is None:
+            return None
+        try:
+            snap = await self._run_in_thread(run_changes.task_snapshot, seg, task.id, when)
+            rec = run_changes.record_task(self.board, seg, task.id, when, snap)
+            if when != "after" or not (rec["before"] and rec["after"]):
+                return None
+            files = await self._run_in_thread(checkpoints.changes, seg.store,
+                                              rec["before"], rec["after"])
+            return checkpoints.counts(files)
+        except Exception as e:      # noqa: BLE001 -- see docstring
+            print(f"[检查点] 任务 {task.id} 的 {when} 检查点失败：{e!r}", file=sys.stderr)
+            return None
+
     def _workdir_snapshot(self):
         """events.jsonl/blackboard.jsonl are written during every single
         task, so they must never count as anyone's deliverable."""
         return snapshot(self.workdir, exclude=(self.bus.path, self.board.path))
 
     async def _finalize_done(self, task: Task, agent_name: str, result,
-                             before=None) -> None:
+                             before=None, changes=None) -> None:
         if (self.summarize_enabled
                 and len(result.output) > SUMMARIZE_TRIGGER_LEN
                 and task.id in self._has_dependents):
@@ -209,6 +311,7 @@ class Engine:
             self.total_cost += summ_cost_usd
             self.total_credits += summ_cost_credits
             self.bus.emit("summary_generated", task_id=task.id,
+                          cost_complete=self._cost_complete(),
                           agent=summ_agent, ok=summary_text is not None,
                           cost_usd=round(summ_cost_usd, 4),
                           cost_credits=round(summ_cost_credits, 4),
@@ -232,6 +335,10 @@ class Engine:
         self.board.put(f"tasks/{task.id}/status", "done",
                        author="engine", task_id=task.id, kind="fact")
         extra = {"usage": result.usage} if result.usage else {}
+        extra['cost_complete'] = self._cost_complete()
+        if changes is not None:
+            # 这个任务在写锁里拍的前后检查点之差（spec §3.4，新增字段）
+            extra["changes"] = changes
         self.bus.emit("task_completed", task_id=task.id, agent=agent_name,
                       cost_usd=round(task.cost_usd, 4),
                       cost_credits=round(task.cost_credits, 4),
@@ -315,7 +422,12 @@ class Engine:
         open_ = self.router.circuit_open()
         out = []
         for name in self.router.all_agents():
-            if name in open_:
+            enabled = getattr(self.router, 'agent_enabled', lambda _name: True)
+            if name in open_ or not enabled(name):
+                continue
+            metadata = getattr(self.router, 'agent_metadata', None)
+            if callable(metadata):
+                out.append(metadata(name))
                 continue
             out.append({"name": name,
                         "kind": self.router.kind(name),
@@ -358,7 +470,8 @@ class Engine:
                 decision = str(reply.get("decision") or "cancel")
                 self.bus.emit("gate_resolved", gate_id=gate_id,
                               gate_token=gate_token, decision=decision,
-                              overrides=reply.get("overrides") or {})
+                              overrides=reply.get("overrides") or {},
+                              execution_options=reply.get('execution_options') or {})
                 return reply
             if timeout and waited >= timeout:
                 self.bus.emit("gate_resolved", gate_id=gate_id,
@@ -404,28 +517,27 @@ class Engine:
             return self.router.chain_for(task)
         name = task.pinned_agent
         circuit_open = getattr(self.router, "circuit_open", None)
-        if callable(circuit_open) and name in circuit_open():
+        if not task.execution_options and callable(circuit_open) and name in circuit_open():
             return []
         try:
+            if task.execution_options:
+                return [(name, self.router.executor_with_options(name, task.execution_options))]
             return [(name, self.router.executor_for(name))]
-        except (KeyError, AttributeError):
+        except (KeyError, AttributeError, ValueError) as exc:
+            task.error = f'selected execution configuration unavailable: {exc}'
             return []
 
-    def _is_write_task(self, task: Task) -> bool:
-        """这个任务开跑前要不要停在写盘门上（spec §3.8）。
+    def _can_write(self, agent_name: str) -> bool:
+        """这个 agent 会不会写盘（hub/router.py agent_can_write）。getattr：没有
+        kind() 的测试桩 Router 一律当只读 -- 不开写盘门、不排队。"""
+        kind_of = getattr(self.router, "kind", None)
+        kind = kind_of(agent_name) if callable(kind_of) else ""
+        return agent_can_write(kind, self._allowed_tools_of(agent_name))
 
-        codebuddy/codex/dsh 是全权 agent，自带 tools/subagents/skills，Agent Hub
-        对它们的工具权限**没有任何可见性** -- 保守地全当写盘处理，宁可多
-        问几次，也不装作能判断。
-        """
-        for name, _executor in self._task_chain(task):
-            kind = self.router.kind(name)
-            if kind in ALWAYS_WRITE_KINDS:
-                return True
-            if kind == "claude_code" and any(
-                    tool in WRITE_TOOLS for tool in self._allowed_tools_of(name)):
-                return True
-        return False
+    def _is_write_task(self, task: Task) -> bool:
+        """这个任务开跑前要不要停在写盘门上（spec §3.8）：整条降级链里只要有一个
+        会写的 agent 就开门。"""
+        return any(self._can_write(name) for name, _executor in self._task_chain(task))
 
     def _skip_all_pending(self) -> None:
         """把还没跑的任务全部置 SKIPPED，让 plan.finished() 成立。
@@ -440,6 +552,23 @@ class Engine:
 
     # ---------- run one task ----------
     async def _run_task(self, task: Task) -> None:
+        """Run one task. An exception nobody classified must still end it.
+
+        Without this guard an unexpected exception (an OSError from the OS,
+        the ValueError an emptied route raises...) died unseen inside the
+        asyncio Task: no task_failed, the task stayed RUNNING, its
+        dependents PENDING, and the run still "finished" with exit code 0.
+        """
+        try:
+            await self._run_task_body(task)
+        except Exception as exc:        # CancelledError is not an Exception
+            if task.status in (TaskStatus.DONE, TaskStatus.FAILED, TaskStatus.SKIPPED):
+                raise                   # already has a verdict; don't rewrite it
+            task.status = TaskStatus.FAILED
+            task.error = f"{type(exc).__name__}: {exc}"[:500]
+            self.bus.emit("task_failed", task_id=task.id, error=task.error)
+
+    async def _run_task_body(self, task: Task) -> None:
         if self.gate_mode == "ask" and self._is_write_task(task):
             # 门开在 acquire 之前：等用户点头的时候不占并发槽，只读任务
             # 照跑（spec §3.3）
@@ -460,7 +589,28 @@ class Engine:
                 task.status = TaskStatus.SKIPPED
                 self._skip_all_pending()
                 return
-        await self.sem.acquire()
+        # 等待顺序：任务门 → 写锁 → 并发名额（change-safety-net.md §4）。等写锁
+        # 时不占名额，只读任务照样并行；写锁永远先于名额拿，所以不会死锁
+        hold = _WriteHold(self, task)
+        planned = self._task_chain(task)
+        try:
+            if planned and self._can_write(planned[0][0]):
+                await hold.take()
+            await self.sem.acquire()
+        except BaseException:
+            # take() 拿到写锁之后还要 await 一次检查点，拿名额也可能等很久 --
+            # 取消（含 CancelledError）如果发生在这中间，锁必须还是要放掉，不然
+            # 这次运行后面每一个写盘任务都会卡死等一把永远不会释放的锁（R-T8a）
+            await hold.release()
+            raise
+        if task.status is TaskStatus.SKIPPED:
+            # 排在锁/名额上等的时候，被另一个任务门被取消时的 _skip_all_pending()
+            # 标成 SKIPPED 了：不跑、不发事件、不拍检查点（round-1 (a)）。落到
+            # 会写 agent 的降级路径不用这个检查——那时 task.status 已经是
+            # RUNNING，_skip_all_pending() 根本不碰它
+            self.sem.release()
+            await hold.release()
+            return
         try:
             budget = float(self.router.budget.get("max_usd_per_run", 1e9))
             before = self._workdir_snapshot()
@@ -468,7 +618,7 @@ class Engine:
             context = self._context_for(task)
             max_attempts = int(self.router.budget.get("max_attempts_per_task", 2))
 
-            chain = self._task_chain(task)
+            chain = self._task_chain(task)   # 熔断状态可能在等锁、等名额期间变了
             for agent_name, executor in chain:
                 if task.attempts >= max_attempts:
                     break
@@ -486,6 +636,20 @@ class Engine:
                                   reason="paid API budget exceeded")
                     continue
 
+                if not hold.held and self._can_write(agent_name):
+                    # 从只读 agent 降级到会写的（比如 planning 从 cc-opus 落到
+                    # cc-sonnet）：先让出名额、拿写锁、再拿名额
+                    self.sem.release()
+                    try:
+                        await hold.take()
+                    finally:
+                        await self.sem.acquire()
+                    # 等锁的这段时间里，别的写盘任务可能已经改了工作目录：这个
+                    # before 必须是「真正要开始写之前」的快照，不然它们的改动
+                    # 会被错算成这个任务的交付物（只读那次没写成，丢的不是它
+                    # 自己的东西，见 R-T8b）
+                    before = self._workdir_snapshot()
+
                 task.attempts += 1
                 task.agent = agent_name
 
@@ -494,16 +658,29 @@ class Engine:
                                   detail=detail)
 
                 retry = 0
+                # Persist the actual attempt before calling the CLI. Keep the
+                # live task's routing flags unchanged until success, so automatic
+                # fallback and circuit breaking still behave as before.
+                resolve = getattr(self.router, 'resolved_options', None)
+                if callable(resolve) and hasattr(executor, 'model'):
+                    values = resolve(agent_name, task.execution_options)
+                    values['model'] = executor.model
+                    values['effort'] = getattr(executor, 'reasoning_effort', values['effort'])
+                    spec = dict(self.board.get(f"tasks/{task.id}/spec") or {})
+                    spec.update(pinned_agent=agent_name, execution_options=values)
+                    self.board.put(f"tasks/{task.id}/spec", spec, author='engine', kind='spec')
                 while True:
                     self.bus.emit("task_started", task_id=task.id, title=task.title,
                                   agent=agent_name, animal=self.router.animal(agent_name),
-                                  attempt=task.attempts)
+                                  attempt=task.attempts,
+                                  model=getattr(executor, 'model', task.execution_options.get('model', '')),
+                                  effort=getattr(executor, 'reasoning_effort', task.execution_options.get('effort', '')))
                     result = await executor.run(task, context, on_event=_on_event)
                     self.total_cost += result.cost_usd
                     self.total_credits += result.cost_credits
                     task.cost_usd += result.cost_usd
                     task.cost_credits += result.cost_credits
-                    if self.router.is_paid_api(agent_name):
+                    if self.router.is_paid_api(agent_name) and getattr(self.router, 'kind', lambda n: '')(agent_name) != 'api':
                         self.paid_cost += result.cost_usd
                     if result.ok:
                         self._persist_turn(task, agent_name, executor, result)
@@ -514,18 +691,22 @@ class Engine:
                                 final_result = await self._await_input_loop(
                                     task, agent_name, executor, result.session_id,
                                     0, result)
-                        await self._finalize_done(task, agent_name, final_result, before)
+                        changes = await hold.finish()
+                        await self._finalize_done(task, agent_name, final_result, before,
+                                                  changes=changes)
                         return
 
                     self.bus.emit("agent_failed", task_id=task.id, agent=agent_name,
+                                  cost_complete=self._cost_complete(),
                                   error=result.error[:300], error_kind=result.error_kind,
                                   cost_usd=round(result.cost_usd, 4),
                                   cost_credits=round(result.cost_credits, 4))
 
                     if result.error_kind == "unavailable":
-                        self.router.open_circuit(agent_name)
-                        self.bus.emit("agent_circuit_open", agent=agent_name,
-                                      task_id=task.id, reason=result.error[:200])
+                        if not task.execution_options:
+                            self.router.open_circuit(agent_name)
+                            self.bus.emit("agent_circuit_open", agent=agent_name,
+                                          task_id=task.id, reason=result.error[:200])
                         break  # move to next agent in the chain
                     if result.error_kind == "transient" and retry < TRANSIENT_MAX_RETRIES:
                         retry += 1
@@ -533,6 +714,7 @@ class Engine:
                         continue  # same agent, same attempt slot
                     break  # task_error, or transient retries exhausted
 
+            await hold.finish()      # 失败的写盘任务也可能改了文件，照样记到它头上
             task.status = TaskStatus.FAILED
             if not chain and task.pinned_agent:
                 # 空链且有钉选 = 一个 agent 都没试过。报「all agents
@@ -547,6 +729,7 @@ class Engine:
             self.bus.emit("task_failed", task_id=task.id, error=task.error)
         finally:
             self.sem.release()
+            await hold.release()
 
     # ---------- main loop ----------
     async def run(self) -> Plan:
@@ -567,7 +750,8 @@ class Engine:
                            {"title": t.title, "type": t.type.value,
                             "prompt": t.prompt, "depends_on": t.depends_on,
                             "difficulty": t.difficulty, "specialty": t.specialty,
-                            "pinned_agent": t.pinned_agent},
+                            "pinned_agent": t.pinned_agent,
+                            "execution_options": t.execution_options},
                            author="system", kind="spec")
 
         restored = []
@@ -597,8 +781,13 @@ class Engine:
                 chain = []      # 该任务类型没有路由 -- 照实留空，不猜
             d["intended_agent"] = chain[0][0] if chain else ""
             tasks_payload.append(d)
+        # resumed：新增字段。前端原来只靠 restored 非空判断「这是重跑、并进
+        # 同一条会话」，而头一个任务就失败的运行重跑时 restored 是空的
+        # checkpoints：新增字段，前端据此在开头提示「这次运行不能一键回滚」
+        # （spec §3.4）。没接检查点的调用方（旧测试、直接 new Engine）不带它
+        extra = {} if self.checkpoint_status is None else {"checkpoints": self.checkpoint_status}
         self.bus.emit("plan_created", goal=self.plan.goal,
-                      tasks=tasks_payload, restored=restored)
+                      tasks=tasks_payload, restored=restored, resumed=self.resume, **extra)
 
         if self.gate_mode == "ask" or self.assign_mode == "manual":
             # 「或」是有意的：手动分配模型强制开门，哪怕权限设成 auto。
@@ -612,6 +801,14 @@ class Engine:
                 for tid, agent in (reply.get("overrides") or {}).items():
                     if tid in self.plan.tasks:
                         self.plan.tasks[tid].pinned_agent = str(agent)
+                        options = (reply.get('execution_options') or {}).get(tid, {})
+                        resolve = getattr(self.router, 'resolved_options', None)
+                        if callable(resolve):
+                            options = resolve(str(agent), options)
+                        self.plan.tasks[tid].execution_options = dict(options)
+                        spec = self.board.get(f'tasks/{tid}/spec')
+                        spec.update(pinned_agent=str(agent), execution_options=dict(options))
+                        self.board.put(f'tasks/{tid}/spec', spec, author='system', kind='spec')
 
         running: set[asyncio.Task] = set()
         while not self.plan.finished():
@@ -627,9 +824,38 @@ class Engine:
                 break
             await asyncio.sleep(0)
 
-        self.bus.emit("run_finished",
-                      total_cost_usd=round(self.total_cost, 4),
-                      paid_api_cost_usd=round(self.paid_cost, 4),
-                      total_credits=round(self.total_credits, 4),
-                      statuses={t.id: t.status.value for t in self.plan.tasks.values()})
+        # plan.finished() 只看 task.status，门被取消时 _skip_all_pending() 会让它
+        # 立刻成立——但被标成 SKIPPED 的任务的协程可能还活着（排在写锁/名额上），
+        # 后台检查点线程被取消也不会真的停（round-1 (b)）。收尾检查点前必须先
+        # 确认没有别的协程、别的线程还在碰这个 git 库，不然会跟这里马上要拍的收尾
+        # 快照同时对同一个库跑 git，谁都可能失败，这次运行的回滚就丢了
+        for h in running:
+            h.cancel()
+        if running:
+            await asyncio.gather(*running, return_exceptions=True)
+        if self._checkpoint_threads:
+            await asyncio.gather(*self._checkpoint_threads, return_exceptions=True)
+
+        if self.checkpoint_seg is not None:
+            # 结束检查点在 run_finished 之前（spec §3.2）。此刻所有任务都已结束、
+            # 也没有别的协程或后台检查点线程还在跑，直接同步拍
+            run_changes.end(self.board, self.checkpoint_seg, author="engine")
+        ledger = getattr(self.router, 'paid_ledger', None)
+        # Match the follow-up writer's lock: a newer cumulative event must never
+        # be followed by an older run_finished snapshot.
+        with file_lock(ledger.path + '.events') if ledger and ledger.path else contextlib.nullcontext():
+            paid = ledger.latest_snapshot() if ledger else {'spent_usd': 0, 'unknown': False}
+            if ledger:
+                counted = self._api_cost_at_start + ledger.recorded_usd - self._api_recorded_at_start
+                self.total_cost += max(0, paid['spent_usd'] - counted)
+            self.bus.emit("run_finished",
+                          cost_complete=not paid['unknown'],
+                          total_cost_usd=round(self.total_cost, 4),
+                          paid_api_cost_usd=round(self.paid_cost + paid['spent_usd'], 4),
+                          total_credits=round(self.total_credits, 4),
+                          statuses={t.id: t.status.value for t in self.plan.tasks.values()})
         return self.plan
+
+    def _cost_complete(self):
+        ledger = getattr(self.router, 'paid_ledger', None)
+        return not ledger.latest_snapshot()['unknown'] if ledger else True

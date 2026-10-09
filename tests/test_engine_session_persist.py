@@ -75,7 +75,7 @@ def _script_subprocess(response: dict):
         class _Proc:
             returncode = 0
 
-            async def communicate(self_inner):
+            async def communicate(self_inner, input=None):
                 return json.dumps(response).encode("utf-8"), b""
         return _Proc()
     asyncio.create_subprocess_exec = fake_exec
@@ -159,7 +159,7 @@ def test_claude_code_task_without_session_id_writes_no_session_key():
         class _Proc:
             returncode = 0
 
-            async def communicate(self_inner):
+            async def communicate(self_inner, input=None):
                 return b"not valid json, plain text fallback", b""
         return _Proc()
     asyncio.create_subprocess_exec = fake_exec

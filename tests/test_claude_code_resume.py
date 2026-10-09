@@ -18,11 +18,13 @@ from hub.models import Task, TaskType
 
 
 class _FakeProc:
-    def __init__(self, stdout: bytes, returncode: int = 0):
+    def __init__(self, stdout: bytes, returncode: int = 0, captured: dict = None):
         self._stdout = stdout
         self.returncode = returncode
+        self._captured = captured if captured is not None else {}
 
-    async def communicate(self):
+    async def communicate(self, input=None):
+        self._captured["stdin"] = input
         return self._stdout, b""
 
 
@@ -31,7 +33,7 @@ def _patch_subprocess(stdout_json: dict, returncode: int = 0):
 
     async def fake_exec(*args, **kwargs):
         captured["argv"] = args
-        return _FakeProc(json.dumps(stdout_json).encode("utf-8"), returncode)
+        return _FakeProc(json.dumps(stdout_json).encode("utf-8"), returncode, captured)
 
     asyncio.create_subprocess_exec = fake_exec
     return captured
@@ -74,7 +76,10 @@ def test_run_resumed_passes_resume_flag_and_session_id():
     assert "--resume" in argv, f"expected --resume flag, got {argv}"
     idx = argv.index("--resume")
     assert argv[idx + 1] == "sess-abc-123", f"expected session id after --resume, got {argv}"
-    assert "-p" in argv and "what about X?" in argv, f"expected the message as -p arg, got {argv}"
+    # The message goes through stdin, not argv (B2: Windows caps a command
+    # line at 32,767 chars, and a long follow-up would read as "CLI missing").
+    assert "-p" in argv and "what about X?" not in argv, f"message leaked into argv: {argv}"
+    assert captured["stdin"] == "what about X?".encode("utf-8"), captured.get("stdin")
     print("PASS: test_run_resumed_passes_resume_flag_and_session_id")
 
 
@@ -100,10 +105,18 @@ def test_run_resumed_error_classification_matches_run():
 
 def test_run_resumed_timeout_is_transient():
     class _NeverProc:
+        # mirrors the real asyncio Process surface the timeout path uses:
+        # on timeout the executor now kills and reaps the child (bug B3)
         returncode = None
 
-        async def communicate(self):
+        async def communicate(self, input=None):
             await asyncio.sleep(999)
+
+        def kill(self):
+            self.returncode = -9
+
+        async def wait(self):
+            return self.returncode
 
     async def fake_exec_timeout(*args, **kwargs):
         return _NeverProc()

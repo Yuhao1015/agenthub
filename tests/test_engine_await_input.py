@@ -65,7 +65,7 @@ def _script_subprocess(responses: list):
         class _Proc:
             returncode = 0
 
-            async def communicate(self_inner):
+            async def communicate(self_inner, input=None):
                 payload = queue.pop(0)
                 return json.dumps(payload).encode("utf-8"), b""
         return _Proc()

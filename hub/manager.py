@@ -145,7 +145,8 @@ def _render_history(history: list[dict]) -> str:
 
 async def manager_step(history: list[dict], router: Router, workdir: str,
                        force_finish: bool = False,
-                       on_event: Optional[Callable[[str], None]] = None) -> dict:
+                       on_event: Optional[Callable[[str], None]] = None,
+                       execution_options: Optional[dict] = None) -> dict:
     """One LLM turn through the normal Router/Executor chain.
 
     status="ready" means "here is my proposal", NOT "go" -- the caller
@@ -172,7 +173,15 @@ async def manager_step(history: list[dict], router: Router, workdir: str,
     for _ in range(attempts):
         task = Task(id="_manager", title="clarify goal",
                     type=TaskType.MANAGER, prompt=prompt)
-        for agent_name, executor in router.chain_for(task):
+        try:
+            chain = router.chain_for(task)
+        except ValueError:
+            if last_err != 'no agents available for the manager route':
+                raise RuntimeError(last_err) from None
+            raise
+        for agent_name, executor in chain:
+            if execution_options:
+                executor = router.executor_with_options(agent_name, dict(execution_options))
             result = await executor.run(task, context="", on_event=on_event)
             spent += result.cost_usd
             if not result.ok and result.error_kind == "transient":
@@ -183,7 +192,7 @@ async def manager_step(history: list[dict], router: Router, workdir: str,
                 spent += result.cost_usd
             if not result.ok:
                 last_err = result.error or "unknown executor error"
-                if result.error_kind == "unavailable":
+                if result.error_kind == "unavailable" and not execution_options:
                     router.open_circuit(agent_name)
                 continue
             text = re.sub(r"^```(json)?|```$", "", result.output.strip(), flags=re.M).strip()

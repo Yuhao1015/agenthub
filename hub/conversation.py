@@ -114,6 +114,19 @@ async def continue_task_conversation(task_id: str, message: str, router,
     need a tasks/{id}/workdir key if this needs to be fixed properly.
     """
     agent_name = board.get(f"tasks/{task_id}/agent")
+    if agent_name and callable(getattr(router, 'kind', None)) and router.kind(agent_name) == 'api':
+        spec = board.get(f'tasks/{task_id}/spec') or {}
+        options = spec.get('execution_options', {})
+        executor = (router.executor_with_options(agent_name, options) if options
+                    else router.executor_for(agent_name))
+        context = ('Original task:\n' + str(spec.get('prompt', '')) +
+                   '\nPrevious answer:\n' + str(board.get(f'tasks/{task_id}/output') or ''))
+        task = Task(id=task_id, title='text API follow-up', type=TaskType.LIGHT, prompt=message)
+        result = await executor.run(task, context)
+        if result.ok:
+            board.put(f'tasks/{task_id}/output', result.output,
+                      author=agent_name, task_id=task_id, kind='output')
+        return result, False
     session_id = board.get(f"tasks/{task_id}/session_id")
     if not agent_name or not session_id:
         raise ConversationError(
@@ -121,9 +134,14 @@ async def continue_task_conversation(task_id: str, message: str, router,
             "(it may not have completed, or wasn't handled by a claude_code agent)")
 
     try:
-        executor = router.executor_for(agent_name)
+        spec = board.get(f"tasks/{task_id}/spec") or {}
+        options = spec.get('execution_options', {})
+        executor = (router.executor_with_options(agent_name, options) if options
+                    else router.executor_for(agent_name))
     except KeyError:
         raise ConversationError(f"agent '{agent_name}' is no longer in the capability matrix")
+    except ValueError as exc:
+        raise ConversationError(f"task '{task_id}' has invalid saved execution options: {exc}")
     if not isinstance(executor, ClaudeCodeExecutor):
         raise ConversationError(
             f"agent '{agent_name}' is not a claude_code agent -- deep "

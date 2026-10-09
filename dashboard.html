@@ -1,12 +1,10 @@
 <!DOCTYPE html>
-<html lang="zh" data-theme="dark">
+<html lang="zh" data-theme="light">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Agent Hub</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;800&family=Press+Start+2P&display=swap" rel="stylesheet">
-<script src="https://unpkg.com/lucide@0.428.0/dist/umd/lucide.min.js"></script>
+<script src="assets/vendor/lucide.min.js"></script>
 <style>
 :root[data-theme="dark"]{
   --bg:#191817; --surface:#201f1e; --surface2:#2a2827; --raise:#302e2d;
@@ -202,14 +200,15 @@ button:focus-visible,textarea:focus-visible{outline:2px solid var(--accent);outl
 #input-bar{flex:none;background:var(--bg);padding:10px 24px 16px}
 #input-inner{max-width:720px;margin:0 auto;display:flex;flex-direction:column;gap:8px}
 #run-bar{display:flex;gap:8px;align-items:center;padding:0 4px;flex-wrap:wrap}
-#run-bar .chip{display:inline-flex;align-items:center;gap:5px;padding:4px 9px;
+#run-bar .chip,.execution-controls .chip{display:inline-flex;align-items:center;gap:5px;padding:4px 9px;
   font-size:11.5px;color:var(--dim);background:transparent;border:1px solid var(--hair);
   border-radius:999px;cursor:pointer}
-#run-bar .chip:hover{color:var(--ink);border-color:var(--ink)}
-#run-bar .sw{padding:4px 8px;font-size:11.5px;background:transparent;
+#run-bar .chip:hover,.execution-controls .chip:hover{color:var(--ink);border-color:var(--ink)}
+#run-bar .sw,.execution-controls .sw,.agent-picker .sw{padding:4px 8px;font-size:11.5px;background:transparent;
   color:var(--dim);border:1px solid var(--hair);border-radius:999px;cursor:pointer}
-#run-bar .sw:hover{color:var(--ink)}
-#run-bar .sw option{background:var(--surface);color:var(--ink)}
+#run-bar .sw:hover,.execution-controls .sw:hover,.agent-picker .sw:hover{color:var(--ink)}
+#run-bar .sw option,.execution-controls .sw option,.agent-picker .sw option{background:var(--surface);color:var(--ink)}
+.execution-controls input{max-width:240px;min-width:160px;cursor:text;border-radius:6px!important}
 #run-bar .manager-warning{padding:3px 7px;font-size:10.5px;color:#e6a06a;
   border:1px solid rgba(230,160,106,.4);border-radius:999px;white-space:nowrap}
 #run-bar input{flex:1;min-width:180px;padding:5px 9px;font-size:11.5px;
@@ -264,6 +263,7 @@ button:focus-visible,textarea:focus-visible{outline:2px solid var(--accent);outl
   font-family:ui-monospace,Menlo,monospace;font-size:12px}
 .f-row .s{flex:none;color:var(--dim);font-size:11.5px}
 .f-row i{flex:none;width:15px;height:15px;color:var(--dim)}
+.chg-row{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:10px;font-size:12.5px;color:var(--dim)}
 
 /* file preview panel — sits over the task drawer (wider, higher z) */
 #pv-wrap{position:absolute;inset:0;display:none;justify-content:flex-end;pointer-events:none;z-index:6}
@@ -297,6 +297,25 @@ button:focus-visible,textarea:focus-visible{outline:2px solid var(--accent);outl
   border:1px solid var(--hair);border-radius:9px;padding:11px 12px;overflow-x:auto;margin:10px 0}
 .pv-note{padding:36px 20px;text-align:center;color:var(--dim);font-size:13px;line-height:1.8}
 .pv-note b{display:block;color:var(--ink);font-size:14.5px;margin-bottom:6px;font-weight:600}
+.rv-top{padding:12px 16px;font-size:12.5px;color:var(--dim);line-height:1.7;border-bottom:1px solid var(--hair)}
+.rv-diffhead{display:flex;gap:10px;align-items:center}
+.rv-seg{padding:10px 16px 6px}
+.rv-seg h4{font-size:13px;font-weight:600;margin:6px 0}
+.rv-grp{font-size:11.5px;color:var(--dim);margin:10px 0 4px}
+.rv-note{font-size:12px;color:var(--dim);margin:4px 0;line-height:1.6;overflow-wrap:anywhere}
+.rv-f{display:flex;gap:8px;align-items:center;padding:4px 0;font-size:12.5px}
+.rv-f input{flex:none}
+.rv-st{flex:none;font-size:11px;padding:1px 7px;border-radius:999px;background:var(--surface2)}
+.rv-st.st-A{background:var(--accent-tint);color:var(--accent)}
+.rv-st.st-D{color:var(--dim);text-decoration:line-through}
+.rv-path{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:left;
+  font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;background:none;border:0;
+  color:var(--ink);padding:0}
+button.rv-path{cursor:pointer}
+button.rv-path:hover{color:var(--accent)}
+.rv-n{flex:none;color:var(--dim);font-size:11.5px}
+.rv-foot{position:sticky;bottom:0;display:flex;gap:8px;align-items:center;flex-wrap:wrap;
+  padding:10px 16px;background:var(--surface);border-top:1px solid var(--hair)}
 
 @media(max-width:900px){
   #app{grid-template-columns:1fr}#side{display:none}
@@ -305,13 +324,20 @@ button:focus-visible,textarea:focus-visible{outline:2px solid var(--accent);outl
   #pv{width:100%;border-radius:0}
 }
 </style>
+<link rel="stylesheet" href="assets/studio.css">
+<link rel="stylesheet" href="assets/connections.css">
+<link rel="stylesheet" href="assets/async-ui.css">
+<link rel="stylesheet" href="assets/agent-catalog.css">
+<script src="assets/async-ui.js"></script>
+<script src="assets/agent-catalog.js"></script>
+<script src="assets/goal-queue.js"></script>
 </head>
 <body>
 <div id="app">
   <aside id="side">
     <div id="side-head">
       <div class="brand"><i></i><span>AGENT HUB</span></div>
-      <button id="new-btn"><i data-lucide="plus"></i>新目标</button>
+      <button id="new-btn" class="icon-only" title="新目标" aria-label="新目标"><i data-lucide="square-pen" aria-hidden="true"></i></button>
     </div>
     <div id="side-label">运行历史</div>
     <nav id="sessions"></nav>
@@ -327,8 +353,8 @@ button:focus-visible,textarea:focus-visible{outline:2px solid var(--accent);outl
       <div class="title">Agent Hub — 调度中心</div>
       <div style="margin-left:auto;display:flex;align-items:center;gap:8px">
         <button id="mode-btn"><span class="dot"></span><span id="mode-label">LIVE</span></button>
-        <a id="settings-btn" href="settings.html" title="设置">设置</a>
-        <button id="theme-btn" title="切换主题"><i data-lucide="contrast"></i></button>
+        <a id="settings-btn" class="icon-only" href="settings.html" title="设置" aria-label="设置"><i data-lucide="settings" aria-hidden="true"></i></a>
+        <button id="theme-btn" title="切换主题" aria-label="切换主题"><i data-lucide="contrast" aria-hidden="true"></i></button>
       </div>
     </div>
 
@@ -341,11 +367,11 @@ button:focus-visible,textarea:focus-visible{outline:2px solid var(--accent);outl
         </div>
         <div style="margin-left:auto;display:flex;align-items:center;gap:10px">
           <span id="run-tag"><span class="dot"></span><span id="run-text">待命</span></span>
-          <button id="cancel-run" class="btn ghost" hidden><i data-lucide="circle-x"></i>取消</button>
-          <a id="export-run" class="btn ghost" href="/export" download hidden>
-            <i data-lucide="package"></i>导出交付物
+          <button id="cancel-run" class="btn ghost icon-only" title="取消运行" aria-label="取消运行" hidden><i data-lucide="circle-x" aria-hidden="true"></i></button>
+          <a id="export-run" class="btn ghost icon-only" title="导出交付物" aria-label="导出交付物" href="/export" download hidden>
+            <i data-lucide="download" aria-hidden="true"></i>
           </a>
-          <button id="strip-toggle"><i data-lucide="chevrons-down-up"></i><span id="strip-label">收起</span></button>
+          <button id="strip-toggle" class="icon-only" title="展开或收起团队视图"><i data-lucide="chevrons-down-up" aria-hidden="true"></i><span id="strip-label" class="ah-sr-only">收起</span></button>
         </div>
       </div>
       <div id="strip-body">
@@ -377,29 +403,36 @@ button:focus-visible,textarea:focus-visible{outline:2px solid var(--accent);outl
 
     <div id="input-bar"><div id="input-inner">
       <div id="run-bar">
-        <select id="sw-manager" class="sw" title="谁来跟你讨论想法。独占：选定后不降级">
+        <select id="sw-manager-agent" class="sw" title="经理 Agent。选定后独占，不自动降级">
           <option value="">经理 · 自动</option>
         </select>
+        <details><summary class="sw">高级配置</summary>
+          <select id="sw-manager" class="sw" title="保留各配置原有的工具权限">
+            <option value="">经理 · 自动</option>
+          </select>
+        </details>
         <span id="manager-warning" class="manager-warning" hidden
               title="经理调用不计入 max_usd_per_run">经理费用不受护栏</span>
-        <select id="sw-assign" class="sw" title="模型分配。手动会强制打开计划门">
-          <option value="auto">模型分配 · 自动</option>
-          <option value="manual">模型分配 · 我来选</option>
+        <select id="sw-assign" class="sw" title="Agent 分配。手动会强制打开计划门">
+          <option value="auto">Agent 分配 · 自动</option>
+          <option value="manual">Agent 分配 · 我来选</option>
         </select>
         <select id="sw-gate" class="sw"
                 title="ask = 写盘任务开跑前先问你。定时运行始终走自动模式">
           <option value="auto">权限 · 自动</option>
           <option value="ask">权限 · 每步问我</option>
         </select>
-        <button class="chip" id="wk-chip" title="未配置工作区 · 下次运行生效">
-          <i data-lucide="folder"></i><span id="wk-name">工作区</span>
+        <button class="chip icon-only" id="wk-chip" aria-label="选择工作区" title="未配置工作区 · 后续提交的目标使用此工作区">
+          <i data-lucide="plus" aria-hidden="true"></i>
         </button>
+        <span id="wk-name" title="当前工作区">工作区</span>
         <input id="wk-path" placeholder="粘贴文件夹绝对路径…" hidden>
-        <button class="btn ghost" id="wk-save" hidden>保存</button>
+        <button class="btn ghost icon-only" id="wk-save" title="保存工作区" aria-label="保存工作区" hidden><i data-lucide="check" aria-hidden="true"></i></button>
       </div>
+      <div id="manager-options"></div>
       <div id="input-box">
         <textarea id="prompt" rows="1" placeholder="给经理下达目标，或用 @任务id 追问某个 agent…"></textarea>
-        <button id="send" title="发送"><i data-lucide="arrow-up"></i></button>
+        <button id="send" class="icon-only" title="发送" aria-label="发送"><i data-lucide="arrow-up" aria-hidden="true"></i></button>
       </div>
       <div id="input-foot"><span>Enter 发送 · Shift+Enter 换行</span>
         <span id="input-hint"></span>
@@ -474,12 +507,15 @@ function spriteOn(ctx,animal,x,y,s,bob){
 /* ---------- state ---------- */
 const BUDGET=2.0;
 const S={sessions:[],activeIdx:-1,followLatest:true,mode:"live",seenBytes:0,
-  theme:"dark",tab:"office",strip:true,drawer:null,busy:false,sendPending:false,
+  theme:"light",tab:"office",strip:true,drawer:null,busy:false,sendPending:false,
   pendingGoal:null,chatSession:null,preChat:[],preview:null,notifyAsked:false,
   pendingChoiceAnswers:null,restoringSessions:true,
   mgrProgress:[],mgrStart:0,mgrLive:false,
   pvDiff:false,liveDown:false,workdir:"",agents:[],agentPrecision:"",
-  managerChatsByRun:{}};
+  managerChatsByRun:{},fullOutputs:{},
+  // 改动安全网（change-safety-net.md §5.4）：runId -> GET /run/changes 的结果
+  changes:{},changesVer:0,
+  review:null,reviewDiff:null,reviewUnsel:new Set(),reviewResult:null,reviewBusy:false};
 const $=q=>document.querySelector(q);
 // 引号必须一起转义：esc() 的结果有些地方是拼进 HTML 属性值里的
 // （data-copy="…"、value="…" 等），只挡 &<> 的话，一个带 " 的字符串就能
@@ -491,7 +527,7 @@ const esc=s=>String(s==null?"":s).replace(/[&<>"']/g,
   c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const fmtTs=ts=>new Date(ts*1000).toTimeString().slice(0,8);
 const nowTs=()=>Date.now()/1000;
-const icons=()=>{try{window.lucide&&window.lucide.createIcons();}catch(_){}};
+const icons=()=>{try{window.lucide&&window.lucide.createIcons();}catch(_){}}; 
 try{
   S.theme=localStorage.getItem("ah_theme")||S.theme;
   S.tab=localStorage.getItem("ah_tab")||S.tab;
@@ -519,11 +555,36 @@ function notifyRun(title,body){
   }catch(_){}
 }
 
+/* ---------- 改动安全网（change-safety-net.md §5.4）---------- */
+function changeText(c){
+  const n=(c.added||0)+(c.modified||0)+(c.deleted||0);
+  return n?"改了 "+n+" 个文件（新增 "+(c.added||0)+" · 修改 "+(c.modified||0)+
+            " · 删除 "+(c.deleted||0)+"）":"没有改动文件";
+}
+async function loadChanges(runId){
+  if(S.mode!=="live")return;
+  const key=runId||"";
+  try{
+    const r=await fetch("/run/changes?run="+encodeURIComponent(key));
+    const d=await r.json().catch(()=>({}));
+    S.changes[key]=r.ok&&d&&d.checkpoints?d:{error:(d&&d.error)||("HTTP "+r.status)};
+  }catch(e){S.changes[key]={error:String(e.message||e)};}
+  S.changesVer++;renderAll();
+}
+function checkpointNotice(sess,e){
+  if(e.checkpoints&&e.checkpoints.on===false)
+    sess.chat.push({role:"manager",ts:e.ts,
+      text:"提醒：这次运行不能一键回滚（"+(e.checkpoints.reason||"没有检查点")+
+        "）。它改的文件只能靠你自己的备份或 git 找回。"});
+}
+
 /* ---------- ingest ---------- */
+let historyReplay=null;
 function ingest(e){
   if(e.type==="plan_created"){
-    const last=S.sessions[S.sessions.length-1];
-    if(e.restored&&e.restored.length&&last){
+    if(!historyReplay)S.unplannedCost=null;
+    const last=historyReplay?historyReplay.session:S.sessions[S.sessions.length-1];
+    if((e.resumed||(e.restored&&e.restored.length))&&last){
       // 强制重跑（POST /rerun）：同一次 run 的续跑，不是新目标 —— 合并进上一条
         // 会话，不当新会话 push 一条 —— 判据是 e.restored 非空：只有 /rerun
         // 才会带它。不这么判的话，侧栏每点一次「重跑」就多出一条幽灵会话。
@@ -531,12 +592,17 @@ function ingest(e){
       last.status="running";
       const rerunning=e.tasks.filter(t=>!e.restored.includes(t.id)).map(t=>t.title);
       last.chat.push({role:"manager",ts:e.ts,
-        text:"已重新执行 "+rerunning.length+" 个过期任务："+(rerunning.join("、")||"（无）")+"。"});
-      if(S.followLatest){S.activeIdx=S.sessions.length-1;}
+        text:"开始重跑 "+rerunning.length+" 个任务（失败、被跳过或已过期的）："+(rerunning.join("、")||"（无）")+"。"});
+      checkpointNotice(last,e);
+      if(!historyReplay&&S.followLatest&&!window.GoalQueue?.selected()){S.activeIdx=S.sessions.length-1;}
     }else{
-      S.sessions.push({id:"s"+(S.sessions.length+1),goal:e.goal,events:[e],chat:[],
-        status:"running",startTs:e.ts,runId:S.runId||""});
-      const sess=S.sessions[S.sessions.length-1];
+      const sess={id:"s"+(S.sessions.length+1),goal:e.goal,events:[e],chat:[],
+        status:"running",startTs:e.ts,runId:historyReplay?historyReplay.runId:S.runId||""};
+      if(historyReplay)historyReplay.session=sess;else S.sessions.push(sess);
+      if(!historyReplay){
+      // 拆解前崩溃/取消的本地提示属于上一次（没来得及建会话的）运行，新运行立项
+      // 时清掉，别挪进这次运行的对话里
+      S.preChat=S.preChat.filter(m=>!m.local);
       if(S.pendingGoal){sess.chat.push({role:"user",text:S.pendingGoal.text,ts:S.pendingGoal.ts});S.pendingGoal=null;}
       const restored=S.managerChatsByRun[S.runId||""]||null;
       if(restored){
@@ -545,31 +611,40 @@ function ingest(e){
       }else if(S.preChat.length&&!S.chatSession){
         sess.chat.push.apply(sess.chat,S.preChat);S.preChat=[];
       }
+      }
       sess.chat.push({role:"manager",ts:e.ts,
         text:"收到，已立项并拆成 "+e.tasks.length+" 个任务。现在按能力矩阵派单。",
         card:{kind:"plan",tasks:e.tasks.map(t=>({id:t.id,dep:(t.depends_on||[]).length>0}))}});
-      if(S.followLatest)
+      checkpointNotice(sess,e);
+      if(!historyReplay&&S.followLatest&&!window.GoalQueue?.selected())
         S.activeIdx=S.chatSession?S.sessions.length:S.sessions.length-1;
     }
   }else{
-    const sess=S.sessions[S.sessions.length-1];
+    const sess=currentRunSession();
     if(!sess){
+      if(historyReplay)return;
+      if(e.type==='api_cost_updated'){S.unplannedCost={...e,runId:S.runId};renderAll();return;}
       /* 引擎在发出 plan_created 之前就死了 —— argv 错误、找不到 main.py、
          import 期异常……这恰恰是最常见的崩溃形态，而此刻还没有任何会话
          对象。以前这里是一句裸 return，于是用户看到经理说「收到，马上
          安排开工」之后就是永远的沉默：系统知道出了什么事、也写进了磁盘，
          但就是不告诉用户。 */
       if(e.type==="run_crashed"||e.type==="run_cancelled"){
+        // 如实转述后端给的原因，不再一律猜「仓库被移动了」：规划失败才是更常见
+        // 的情形，那句建议会把人引去重启（bug B11；指错方向比不给建议更糟）。
+        // 仓库真被移动时，后端的报错自己会说「重启 Agent Hub」。
+        const err=e.error||"未知原因";
         const msg=e.type==="run_crashed"
-          ?("引擎还没开始拆解任务就异常退出了（"+(e.error||"未知原因")+"）——"
-            +"本次运行没有产生任何任务。最常见的原因是 Agent Hub 启动之后"
-            +"仓库被移动或改名，正在运行的服务还记着旧路径：先重启 Agent Hub。"
-            +"（体检查的是 agent 装没装，这种情况做体检看不出问题。）")
+          ?("引擎在拆出任务之前就停了："+err+"。本次运行没有产生任何任务。"
+            +(err.indexOf("拆解任务失败")>=0
+              ?"可以重新下达一次目标；反复失败的话，到设置页做一次体检，看规划用的 agent 能不能用。"
+              :/exited with code/.test(err)
+                ?"详细报错在启动 Agent Hub 的终端窗口（或 launcher.log）里。":""))
           :"这次运行在开始拆解之前就被取消了，没有产生任何任务。";
         // local:true —— 这行只存在于前端，服务端快照里没有它。经理会话恢复
         // 是 1Hz 整体替换 preChat 的，不打标记的话这条崩溃说明会被下一个
         // tick 抹掉，用户又回到 §6.15 修好之前的那种沉默。
-        S.preChat.push({role:"manager",ts:e.ts,text:msg,local:true});
+        S.preChat.push({role:"manager",ts:e.ts,text:msg+(e.cost_complete===false?" 费用未知；已知部分 $"+Number(e.total_cost_usd||0).toFixed(4):e.total_cost_usd?" 已知费用 $"+Number(e.total_cost_usd).toFixed(4):""),local:true});
         hint(e.type==="run_crashed"?"引擎启动失败——详情见对话":"已取消");
         notifyRun(e.type==="run_crashed"?"Agent Hub · 引擎异常退出"
                                         :"Agent Hub · 已取消运行",msg);
@@ -581,7 +656,7 @@ function ingest(e){
     if(e.type==="gate_opened"){
       const card=e.kind==="plan"
         ?{kind:"gate-plan",gateId:e.gate_id,agents:e.available_agents||[],
-          gateToken:e.gate_token||"",overrides:{},openPicker:"",frozen:false}
+          gateToken:e.gate_token||"",overrides:{},execution_options:{},openPicker:"",frozen:false}
         :{kind:"gate-task",gateId:e.gate_id,taskId:e.task_id,title:e.title,
           gateToken:e.gate_token||"",agent:e.agent,tools:e.allowed_tools||[],frozen:false};
       sess.chat.push({role:"manager",ts:e.ts,text:"",card:card});
@@ -593,6 +668,17 @@ function ingest(e){
           card.frozen=true;card.decision=e.decision;card.openPicker="";
           if(card.kind==="gate-plan"&&e.overrides)
             card.overrides=Object.assign({},e.overrides);
+          if(card.kind==="gate-plan"&&e.execution_options)
+            card.execution_options=Object.assign({},e.execution_options);
+        }
+      }
+    }
+    if(e.type==="run_cancelled"||e.type==="run_crashed"||e.type==="run_finished"){
+      // 运行结束后没人再读门的回复：还开着的门卡一律收起，别让人对着死门点
+      for(const message of sess.chat){
+        const card=message.card;
+        if(card&&(card.kind==="gate-plan"||card.kind==="gate-task")&&!card.frozen){
+          card.frozen=true;card.decision=card.decision||"cancel";card.openPicker="";
         }
       }
     }
@@ -603,7 +689,7 @@ function ingest(e){
     if(e.type==="task_failed")
       sess.chat.push({role:"manager",ts:e.ts,
         text:"任务 "+e.task_id+" 全链路失败：" + (e.error||"未知原因") + "。相关下游会被跳过。",
-        card:{kind:"fail",task:e.task_id,agent:"降级链已用尽",error:e.error||""}});
+        card:{kind:"fail",task:e.task_id,agent:"降级链已用尽",error:e.error||"",final:true}});
     if(e.type==="agent_circuit_open")
       sess.chat.push({role:"manager",ts:e.ts,
         text:"执行器 "+e.agent+" 本轮熔断下线（"+(e.reason||"结构性故障")+"），后续任务会自动跳过它、换人。"});
@@ -619,15 +705,22 @@ function ingest(e){
     if(e.type==="run_crashed"){
       sess.status="failed";
       const msg="引擎异常退出（"+(e.error||"未知原因")+"）——本次运行已中断，点“新目标”可以重来。";
-      sess.chat.push({role:"manager",ts:e.ts,text:msg});
-      notifyRun("Agent Hub · 引擎异常退出",trunc(sess.goal,50)+" · "+msg);
+      sess.chat.push({role:"manager",ts:e.ts,text:msg,card:{kind:"changes",runId:sess.runId}});
+      if(!historyReplay)notifyRun("Agent Hub · 引擎异常退出",trunc(sess.goal,50)+" · "+msg);
     }
     if(e.type==="run_cancelled"){
       sess.status="cancelled";
       const msg="已取消这次运行。已完成的任务保留，正在进行中的任务被中断——不算完成，也不算失败。";
-      sess.chat.push({role:"manager",ts:e.ts,text:msg});
-      notifyRun("Agent Hub · 已取消运行",trunc(sess.goal,50)+" · "+msg);
+      sess.chat.push({role:"manager",ts:e.ts,text:msg,card:{kind:"changes",runId:sess.runId}});
+      if(!historyReplay)notifyRun("Agent Hub · 已取消运行",trunc(sess.goal,50)+" · "+msg);
     }
+    if(e.type==="run_rolled_back")
+      sess.chat.push({role:"manager",ts:e.ts,
+        text:(e.undo?"已撤销上一次回滚：":"已回滚这次运行的改动：")+"恢复 "+(e.restored||0)+" 个文件"+
+          (e.skipped?"，跳过 "+e.skipped+" 个（之后又被改过等原因，详情在审阅面板）":"")+"。"});
+    // 运行结束（完成、取消、崩溃）或回滚之后，重新读这次运行改了哪些文件
+    if(!historyReplay&&["run_finished","run_cancelled","run_crashed","run_rolled_back"].includes(e.type))
+      loadChanges(sess.runId);
     if(e.type==="run_finished"){
       // Engine 在正常取消后仍会发 run_finished，让 serve.py 的看门狗知道
       // 这不是崩溃。cancelled 是更具体的终态，不能被这个收尾事件改回 done。
@@ -636,51 +729,79 @@ function ingest(e){
       if(!wasCancelled){
         sess.status=vals.some(v=>v==="failed")?"failed":"done";
         const done=vals.filter(v=>v==="done").length;
-        const msg=(sess.status==="done"?"全部完成 ":"运行结束，有任务失败 ")+done+"/"+vals.length+
-             " 项任务交付，本次花费 $"+(e.total_cost_usd||0).toFixed(4)+"。";
+        // 有任务被跳过（门上点了跳过、或上游没跑成）就不是「全部完成」
+        const skipped=sess.status==="done"&&done<vals.length;
+        const msg=(sess.status==="failed"?"运行结束，有任务失败 ":skipped?"运行结束，有任务被跳过 ":"全部完成 ")+
+             done+"/"+vals.length+" 项任务交付，本次花费 "+costText(e.total_cost_usd,e.cost_complete)+"。";
         sess.chat.push({role:"manager",ts:e.ts,text:msg,
-          card:{kind:"done",ok:sess.status==="done"}});
-        notifyRun(sess.status==="done"?"Agent Hub · 运行完成":"Agent Hub · 有任务失败",
+          card:{kind:"done",ok:sess.status==="done"&&!skipped,skipped:skipped,runId:sess.runId}});
+        if(!historyReplay)notifyRun(sess.status==="failed"?"Agent Hub · 有任务失败":
+          skipped?"Agent Hub · 运行结束（有任务被跳过）":"Agent Hub · 运行完成",
           trunc(sess.goal,50)+" · "+msg);
       }
     }
   }
-  S.busy=(S.sessions[S.sessions.length-1]||{}).status==="running";
-  renderAll();
+  S.busy=historyReplay?S.busy:(S.sessions[S.sessions.length-1]||{}).status==="running";
+  if(!historyReplay)renderAll();
+}
+
+/* 事件属于服务端当前这次运行（响应头 X-AgentHub-Run）。侧栏最新会话若属于别的
+   运行，就说明这次运行还没建会话：以前事件会被记到上一次运行头上——新运行在
+   拆解前崩溃时，上一次运行被改判成「失败」，这次的崩溃反而没人看见。 */
+function currentRunSession(){
+  if(historyReplay)return historyReplay.session;
+  const last=S.sessions[S.sessions.length-1];
+  return last&&(!S.runId||!last.runId||last.runId===S.runId)?last:null;
+}
+function hydrateRunSession(runId,events){
+  const previous=historyReplay;
+  historyReplay={runId,session:null};
+  try{
+    for(const event of events)if(event&&typeof event.type==='string')ingest(event);
+    return historyReplay.session;
+  }finally{historyReplay=previous}
 }
 
 /* ---------- derived view ---------- */
+function costText(value,complete=true,digits=4){return (complete===false?"费用未知 · 已知 $":"$")+Number(value||0).toFixed(digits);}
 function computeView(sess){
   const v={tasks:new Map(),agents:new Map(),cost:0,waste:0,status:(sess&&sess.status)||"idle",
-    tokIn:0,tokOut:0};
-  if(!sess)return v;
+    tokIn:0,tokOut:0,costComplete:true};
+  if(!sess){if(S.unplannedCost&&S.unplannedCost.runId===S.runId){v.cost=S.unplannedCost.total_cost_usd||0;v.costComplete=S.unplannedCost.cost_complete!==false;}return v;}
   const patch=(id,p)=>{const t=v.tasks.get(id);if(t)Object.assign(t,p);return t;};
   const agent=(name,animal)=>{if(!v.agents.has(name))
       v.agents.set(name,{name:name,animal:animal||"cat",status:"idle",stars:0,cost:0,
         circuitOpen:false,circuitReason:"",awaitingInput:false});
     const a=v.agents.get(name);if(animal)a.animal=animal;return a;};
   for(const e of sess.events){
+    if(e.cost_complete===false){v.costComplete=false;const a=v.agents.get(e.agent);if(a)a.costComplete=false;const t=v.tasks.get(e.task_id);if(t)t.costComplete=false;}
     switch(e.type){
       case "plan_created":for(const t of e.tasks)
         v.tasks.set(t.id,Object.assign({},t,{status:t.status||"pending",cost:0,attempt:1,
           intended:t.intended_agent||"",log:[],board:[],files:[]}));break;
+      case "gate_resolved":if(e.decision==="approve")for(const [id,name] of Object.entries(e.overrides||{}))patch(id,{pinned_agent:name,execution_options:{...(e.execution_options?.[id]||{})}});break;
       case "task_ready":patch(e.task_id,{status:"ready"});break;
-      case "task_started":{patch(e.task_id,{status:"running",agent:e.agent,attempt:e.attempt||1,stale:false});
+      case "task_started":{const t=patch(e.task_id,{status:"running",agent:e.agent,attempt:e.attempt||1,stale:false});
+        if(t){if(Object.hasOwn(e,"model"))t.model=e.model;if(Object.hasOwn(e,"effort"))t.effort=e.effort;}
         const a=agent(e.agent,e.animal);a.status="working";a.taskId=e.task_id;a.awaitingInput=false;
         pushLog(e.task_id,e.ts,"接单",(e.title||"")+(e.attempt>1?"（第"+e.attempt+"次·降级链）":""));break;}
-      case "agent_thinking":{const t=[...v.tasks.values()].find(x=>x.agent===e.agent&&x.status==="running");
-        if(t)pushLog(t.id,e.ts,"思考",e.detail||"");break;}
+      case "agent_thinking":{
+        const candidates=e.task_id?[v.tasks.get(e.task_id)].filter(Boolean)
+          :[...v.tasks.values()].filter(x=>x.agent===e.agent&&x.status==="running");
+        // Legacy events omit task_id; only associate an unambiguous running task.
+        if(candidates.length===1&&candidates[0].status==="running")pushLog(candidates[0].id,e.ts,"思考",e.detail||"");break;}
       case "agent_failed":{const a=v.agents.get(e.agent);
         if(a&&a.taskId===e.task_id){a.status="sad";a.taskId=null;a.cost+=e.cost_usd||0;}
         v.waste+=e.cost_usd||0;
         patch(e.task_id,{status:"retrying"});
         pushLog(e.task_id,e.ts,"失败",(e.error||"")+" → 降级链下一位");break;}
       case "task_completed":{const t=patch(e.task_id,{status:"done",output:e.preview||"",
-          files:Array.isArray(e.files)?e.files:[]});
+          doneTs:e.ts,files:Array.isArray(e.files)?e.files:[],changes:e.changes||null});
         if(t)t.cost=e.cost_usd||0;
         const a=v.agents.get(e.agent);if(a){a.status="idle";a.taskId=null;a.awaitingInput=false;a.stars=(a.stars||0)+1;a.cost+=e.cost_usd||0;}
         v.tokIn+=e.usage?.input_tokens||0;v.tokOut+=e.usage?.output_tokens||0;
-        pushLog(e.task_id,e.ts,"交付","$"+(e.cost_usd||0).toFixed(4)+" · "+(e.preview||"").slice(0,140));break;}
+        pushLog(e.task_id,e.ts,"交付",costText(e.cost_usd,e.cost_complete)+
+          (e.changes?" · "+changeText(e.changes):"")+" · "+(e.preview||"").slice(0,140));break;}
       case "task_failed":{const t=patch(e.task_id,{status:"failed",output:e.error||""});
         if(t&&t.agent){const a=v.agents.get(t.agent);if(a){a.status="sad";a.taskId=null;a.awaitingInput=false;}}
         pushLog(e.task_id,e.ts,"任务失败",e.error||"");break;}
@@ -693,6 +814,7 @@ function computeView(sess){
       case "blackboard_write":{const id=e.task_id||"";const t=v.tasks.get(id);
         if(t)t.board.push({k:e.key||"notes/",v:e.preview||""});
         pushLog(id,e.ts,"白板",(e.key||"note")+" = "+(e.preview||"").slice(0,90));break;}
+      case "api_cost_updated":v.cost=e.total_cost_usd||0;break;
       case "run_finished":v.cost=e.total_cost_usd||0;
         if(e.statuses)for(const kv of Object.entries(e.statuses))patch(kv[0],{status:kv[1]});break;
     }
@@ -706,34 +828,39 @@ function computeView(sess){
 /* ---------- sidebar ---------- */
 function renderSide(){
   const nav=$("#sessions");nav.innerHTML="";
-  if(S.chatSession){
+  if(S.mode==='live'&&window.GoalQueue?.available)GoalQueue.renderSide(nav);
+  if(S.chatSession&&!window.GoalQueue?.records.has(S.chatSession)){
     const draft=document.createElement("button");
     draft.className="sess"+(S.activeIdx===S.sessions.length?" active":"");
     draft.innerHTML='<span class="row"><span class="dot running"></span>'+
       '<span class="s-title">当前经理草稿</span></span>'+
       '<span class="s-meta">'+(S.sendPending?"经理处理中":"澄清中")+'</span>';
-    draft.onclick=()=>{S.activeIdx=S.sessions.length;S.followLatest=true;
-      S.drawer=null;S.preview=null;S.pvDiff=false;pvShown=null;renderAll();};
+    draft.onclick=()=>{window.GoalQueue?.legacy();S.activeIdx=S.sessions.length;S.followLatest=true;
+      S.drawer=null;S.preview=null;S.pvDiff=false;pvShown=null;closeReview();renderAll();};
     nav.appendChild(draft);
   }
   S.sessions.slice().reverse().forEach((sess,ri)=>{
+    if(S.mode==='live'&&window.GoalQueue?.ownsRun(sess.runId))return;
     const i=S.sessions.length-1-ri;
     const b=document.createElement("button");
     b.className="sess"+(i===S.activeIdx?" active":"");
     const v=computeView(sess);
     const done=[...v.tasks.values()].filter(t=>t.status==="done").length;
+    const ch=S.mode==="live"?S.changes[sess.runId||""]:null;
+    const tags=(ch&&ch.changed?" · 改动 "+Number(ch.changed):"")+
+      (ch&&(ch.rollbacks||[]).some(r=>!r.undone&&(r.restored||[]).length)?" · 已回滚":"");
     b.innerHTML='<span class="row"><span class="dot '+sess.status+'"></span>'+
       '<span class="s-title">'+esc(sess.goal)+'</span></span>'+
       '<span class="s-meta">'+({running:"运行中",done:"完成",failed:"失败",cancelled:"已取消",idle:"待命"}[sess.status]||"")+
-      " "+done+"/"+v.tasks.size+" · $"+v.cost.toFixed(4)+"</span>";
+      " "+done+"/"+v.tasks.size+" · "+costText(v.cost,v.costComplete)+tags+"</span>";
     // 预览面板跟抽屉一样是"某次运行里某个任务"的上下文，换会话必须一起收，
     // 否则会顶着上一次运行的文件不放（它比抽屉更宽、盖在最上层，很显眼）
-    b.onclick=()=>{S.activeIdx=i;S.followLatest=!S.chatSession&&i===S.sessions.length-1;
-      S.drawer=null;S.preview=null;S.pvDiff=false;pvShown=null;renderAll();};
+    b.onclick=()=>{window.GoalQueue?.legacy();S.activeIdx=i;S.followLatest=!S.chatSession&&i===S.sessions.length-1;
+      S.drawer=null;S.preview=null;S.pvDiff=false;pvShown=null;closeReview();renderAll();};
     nav.appendChild(b);
   });
-  const v=computeView(S.sessions[S.activeIdx]);
-  $("#budget-text").textContent="$"+v.cost.toFixed(2);
+  const v=computeView(selectedSession());
+  $("#budget-text").textContent=costText(v.cost,v.costComplete,2);
   $("#budget-bar").style.width=Math.min(100,v.cost/BUDGET*100)+"%";
 }
 
@@ -760,35 +887,35 @@ function drawOffice(t){
   hits=[];
   const agents=[...view.agents.values()];
   if(!agents.length){
-    octx.fillStyle=cs.getPropertyValue("--dim");octx.font="500 13px Archivo";octx.textBaseline="top";
+    octx.fillStyle=cs.getPropertyValue("--dim");octx.font="500 13px sans-serif";octx.textBaseline="top";
     octx.fillText("发一个目标，动物员工就会入座",16,18);return;}
   const cols=Math.max(1,Math.floor(w/126));
   agents.forEach((a,i)=>{
     const x=14+(i%cols)*126,y=14+Math.floor(i/cols)*118;
-    octx.fillStyle="#5a4a8a";octx.fillRect(x,y+66,96,9);
-    octx.fillStyle="#443768";octx.fillRect(x+5,y+75,8,16);octx.fillRect(x+83,y+75,8,16);
-    octx.fillStyle="#0d0b1e";octx.fillRect(x+62,y+42,32,24);
-    if(a.status==="working"&&!a.circuitOpen){octx.fillStyle="#7dff9b";
+    octx.fillStyle=cs.getPropertyValue("--desk");octx.fillRect(x,y+66,96,9);
+    octx.fillStyle=cs.getPropertyValue("--desk-leg");octx.fillRect(x+5,y+75,8,16);octx.fillRect(x+83,y+75,8,16);
+    octx.fillStyle=cs.getPropertyValue("--monitor");octx.fillRect(x+62,y+42,32,24);
+    if(a.status==="working"&&!a.circuitOpen){octx.fillStyle=cs.getPropertyValue("--screen-text");
       for(let k=0;k<3;k++)octx.fillRect(x+65,y+46+k*6,6+((t/150+k*7+i)%16),2);}
     const bob=a.status==="working"?Math.round(Math.sin(t/160)*2):0;
     octx.globalAlpha=a.circuitOpen?0.4:1;
     spriteOn(octx,a.animal,x,y+16,4,bob);
     octx.globalAlpha=1;
     const bx=x+52,by=y+2;
-    if(a.status==="working"&&!a.circuitOpen){octx.fillStyle="#efeaff";octx.fillRect(bx,by,34,15);
-      octx.fillStyle="#241f42";const d=1+Math.floor(t/380)%3;
+    if(a.status==="working"&&!a.circuitOpen){octx.fillStyle=cs.getPropertyValue("--screen");octx.fillRect(bx,by,34,15);
+      octx.fillStyle=cs.getPropertyValue("--ink");const d=1+Math.floor(t/380)%3;
       for(let k=0;k<d;k++)octx.fillRect(bx+6+k*9,by+6,4,4);}
     else if(a.status==="sad"){octx.fillStyle=cs.getPropertyValue("--accent");
       octx.fillRect(bx+8,by,4,10);octx.fillRect(bx+8,by+12,4,4);}
     octx.fillStyle=cs.getPropertyValue("--ink");
-    octx.font="500 11px Archivo";octx.textBaseline="middle";
+    octx.font="500 11px sans-serif";octx.textBaseline="middle";
     octx.fillText(a.name+(a.stars?"  ★"+a.stars:""),x,y+100);
     if(a.circuitOpen){
       octx.fillStyle=cs.getPropertyValue("--accent");
       octx.fillRect(x+64,y+3,24,11);
       octx.fillStyle="#fff";octx.font="700 7.5px Archivo";
       octx.fillText("OFF",x+68,y+9);
-      octx.font="500 11px Archivo";
+      octx.font="500 11px sans-serif";
     }
     hits.push({x:x,y:y,w:104,h:104,task:a.taskId});
   });
@@ -898,7 +1025,7 @@ function renderDag(box,tasks,opts){
 
 /* ---------- cost ---------- */
 function renderCost(){
-  $("#cost-num").textContent="$"+view.cost.toFixed(4);
+  $("#cost-num").textContent=costText(view.cost,view.costComplete);
   $("#cost-sub").textContent="本次运行累计"+
     (view.tokIn||view.tokOut?(" · "+(view.tokIn/1000).toFixed(1)+"k in / "+(view.tokOut/1000).toFixed(1)+"k out tokens"):"");
   $("#cost-budget-label").textContent="护栏 $"+BUDGET.toFixed(2)+" · 仅按量 API";
@@ -915,7 +1042,7 @@ function renderCost(){
   if(!list.length){box.innerHTML='<span style="color:var(--dim);font-size:12.5px">暂无花费</span>';return;}
   for(const a of list){
     const n=document.createElement("span");n.textContent=a.name+(a.status==="sad"?"（失败）":"");
-    const v=document.createElement("span");v.className="v";v.textContent="$"+(a.cost||0).toFixed(4);
+    const v=document.createElement("span");v.className="v";v.textContent=costText(a.cost,a.costComplete);
     const b=document.createElement("span");b.className="b"+((a.cost||0)>=max*0.5?" hi":"");
     b.style.width=Math.max(2,(a.cost||0)/max*100)+"%";
     box.append(n,v,b);
@@ -924,6 +1051,26 @@ function renderCost(){
 }
 
 /* ---------- chat ---------- */
+function choiceSelections(answer,options){
+  if(options.some(o=>o.label===answer))return [answer]; // Saved single-choice history.
+  try{const values=JSON.parse(answer||"[]");return Array.isArray(values)?values.filter(v=>typeof v==="string"&&options.some(o=>o.label===v)):[];}catch(_){return [];}
+}
+function changesRow(runId){
+  if(S.mode!=="live")return null;       // DEMO 的事件是伪造的，磁盘上没有改动
+  const box=document.createElement("div");box.className="chg-row";
+  const d=S.changes[runId||""];
+  const t=document.createElement("span");box.appendChild(t);
+  if(!d){t.textContent="正在统计这次运行改了哪些文件…";return box;}
+  if(d.error){t.textContent="读不到改动记录："+d.error;return box;}
+  if(!d.checkpoints.on){t.textContent="这次运行不能一键回滚："+(d.checkpoints.reason||"没有检查点");return box;}
+  const bad=!d.changed&&(d.segments||[]).find(s=>s.error);
+  t.textContent=d.changed?changeText(d.counts):bad?"看不到这次运行的改动："+bad.error:"这次运行没有改动文件";
+  if(d.changed){const b=document.createElement("button");b.className="btn ghost";
+    const i=document.createElement("i");i.dataset.lucide="file-diff";
+    b.append(i,document.createTextNode("审阅改动"));b.onclick=()=>openReview(runId);
+    box.appendChild(b);}
+  return box;
+}
 function cardEl(c,ts){
   const d=document.createElement("div");
   d.className="card"+(c.kind==="fail"?" alert":"");
@@ -949,26 +1096,38 @@ function cardEl(c,ts){
         box.appendChild(input);continue;
       }
       const opts=document.createElement("div");opts.className="opts";
+      opts.setAttribute("role","group");opts.setAttribute("aria-label",q.question);
+      const selected=choiceSelections(c.answers[q.id],questionOptions);
+      const extraInput=document.createElement("input");extraInput.className="other-in";extraInput.placeholder="补充说明…";
+      extraInput.value=c.answers["__other__"+q.id]||"";extraInput.disabled=!!c.frozen;
+      extraInput.setAttribute("aria-label",q.question+" · 补充说明");
+      extraInput.oninput=()=>{c.answers["__other__"+q.id]=extraInput.value;};
+      const updateOptions=()=>{
+        const values=choiceSelections(c.answers[q.id],questionOptions);
+        for(const button of opts.children){const checked=values.includes(button.dataset.choice);button.classList.toggle("on",checked);button.setAttribute("aria-checked",String(checked));}
+        extraInput.hidden=!questionOptions.some(o=>o.other&&values.includes(o.label));
+      };
       for(const o of questionOptions){
         const button=document.createElement("button");
-        button.className="opt"+(c.answers[q.id]===o.label?" on":"");
+        button.className="opt"+(selected.includes(o.label)?" on":"");
+        button.type="button";button.dataset.choice=o.label;button.setAttribute("role","checkbox");
+        button.setAttribute("aria-label",o.label);
+        button.setAttribute("aria-checked",String(selected.includes(o.label)));
         button.textContent=o.label;
         if(o.detail)button.title=o.detail;
         if(c.frozen)button.disabled=true;
-        else button.onclick=()=>{c.answers[q.id]=o.label;
-          if(!o.other)delete c.answers["__other__"+q.id];
-          renderAll();};
+        else button.onclick=()=>{
+          const values=choiceSelections(c.answers[q.id],questionOptions),index=values.indexOf(o.label);
+          if(index<0)values.push(o.label);else values.splice(index,1);
+          c.answers[q.id]=JSON.stringify(values);
+          if(o.other&&index>=0){delete c.answers["__other__"+q.id];extraInput.value="";}
+          updateOptions();if(o.other&&index<0)extraInput.focus();
+        };
         opts.appendChild(button);
       }
       box.appendChild(opts);
-      const chosen=questionOptions.find(o=>o.label===c.answers[q.id]);
-      if(chosen&&chosen.other){
-        const input=document.createElement("input");
-        input.className="other-in";input.placeholder="补充说明…";
-        input.value=c.answers["__other__"+q.id]||"";input.disabled=!!c.frozen;
-        input.oninput=()=>{c.answers["__other__"+q.id]=input.value;};
-        box.appendChild(input);
-      }
+      if(questionOptions.some(o=>o.other))box.appendChild(extraInput);
+      updateOptions();
     }
     d.appendChild(box);
     if(!c.frozen){
@@ -1001,7 +1160,7 @@ function cardEl(c,ts){
     }});
     if(!c.frozen&&c.openPicker)mountAgentPicker(c,c.openPicker,box);
     const note=document.createElement("div");note.className="gate-note";
-    note.textContent=c.frozen?"":"点任一节点可以指定它用哪个模型；不指定就由路由自动决定。";
+    note.textContent=c.frozen?"":"点节点选择 Agent、模型和思考程度；不指定则自动路由。自定义值由对应 Agent 验证。";
     d.appendChild(note);
     if(!c.frozen){
       const acts=document.createElement("div");acts.className="acts";
@@ -1054,14 +1213,18 @@ function cardEl(c,ts){
     const acts=document.createElement("div");acts.className="acts";
     const mk=(cls,icon,label,fn)=>{const b=document.createElement("button");b.className="btn "+cls;
       b.innerHTML='<i data-lucide="'+icon+'"></i>'+label;b.onclick=fn;acts.appendChild(b);};
-    mk("primary","rotate-ccw","重跑 "+c.task,()=>sendText("重跑任务 "+c.task));
+    // 只有终态失败才给重跑：agent_failed 时降级链还在自己换人
+    if(c.final&&canRerun())mk("primary","rotate-ccw","重跑失败任务",rerunFailed);
     mk("","message-circle-more","追问执行器",()=>setPromptText("@"+c.task+" "));
     mk("","sliders-horizontal","看成本影响",()=>openTab("cost"));
     mk("","panel-right-open","打开任务详情",()=>openDrawer(c.task));
     d.appendChild(acts);
+  }else if(c.kind==="changes"){
+    const row=changesRow(c.runId);
+    if(row)d.appendChild(row);else d.hidden=true;
   }else{
     d.innerHTML='<div class="c-head"><i data-lucide="'+(c.ok?"circle-check":"triangle-alert")+'"></i>'+
-      (c.ok?"运行结束 · 全部交付":"运行结束 · 有失败任务")+'</div>';
+      (c.ok?"运行结束 · 全部交付":c.skipped?"运行结束 · 有任务被跳过":"运行结束 · 有失败任务")+'</div>';
     // 这轮真正落到磁盘上的文件，汇总在收尾卡片里直接点开预览
     const seen=new Set(),fw=document.createElement("div");
     for(const t of view.tasks.values())for(const f of (t.files||[])){
@@ -1071,47 +1234,175 @@ function cardEl(c,ts){
       lab.style.cssText="font-size:11.5px;color:var(--dim);margin:10px 0 6px";
       lab.textContent="交付文件 "+seen.size+" 个 · 点开可预览";
       d.append(lab,fw);}
+    const row=changesRow(c.runId);
+    if(row)d.appendChild(row);
   }
   return d;
 }
 
+/* execution selection controls */
+function optionEl(value,label){
+  const option=document.createElement("option");option.value=value;option.textContent=label;return option;
+}
+function agentChoiceKey(agent){return agent?.kind==='api'?agent.name:agent?.kind;}
+function preferredProfile(agents,kind,task){
+  const profiles=agents.filter(a=>agentChoiceKey(a)===kind);
+  if(!task)return profiles.slice().sort((a,b)=>(a.manager_rank??999)-(b.manager_rank??999))[0];
+  return profiles.find(a=>a.name===task.intended_agent)
+    ||profiles.find(a=>(a.route_types||[]).includes(task.type))
+    ||profiles.find(a=>!(a.route_types||[]).includes("manager"))||profiles[0];
+}
+function executionCapabilities(agent,options){
+  const model=Object.hasOwn(options,"model")?options.model:(agent.model||"");
+  if(!agent.effort_supported)return {effort_control:"unsupported",effort_levels:[],source:"unknown"};
+  const current=typeof S!=='undefined'?S.agents?.find(a=>a.name===agent.name&&a.kind===agent.kind):null;
+  const row=current?.runtime_model_capabilities?.[model]||agent.runtime_model_capabilities?.[model]||agent.model_capabilities?.[model];
+  if(row)return row.effort_control==="unverified"?{...row,effort_levels:agent.suggested_efforts||[]}:row;
+  return {effort_control:"unverified",effort_levels:agent.suggested_efforts||[],source:"unknown"};
+}
+function executionSelectionError(agent,options){
+  if(Object.hasOwn(options,"model")){
+    const model=options.model;
+    if(typeof model!=="string"||model.length>200||model.startsWith("-")||/[\s\p{C}]/u.test(model))return "模型 ID 需在 200 字以内，不含空白或控制字符。";
+    if(!model&&!["claude_code","codex","mock"].includes(agent.kind))return "此 Agent 需要明确的模型 ID。";
+  }
+  const effort=Object.hasOwn(options,"effort")?options.effort:agent.effort,cap=executionCapabilities(agent,options);
+  if(effort){
+    if(!/^[A-Za-z][A-Za-z0-9_-]{0,31}$/.test(effort))return "思考参数需为 1–32 位字母、数字、下划线或短横线。";
+    if(cap.effort_control==="unsupported")return "此模型不支持思考参数。";
+    if(cap.effort_control==="supported"&&!cap.effort_levels.includes(effort))return "此模型不支持该思考档位，请重新选择。";
+  }
+  return "";
+}
+function createExecutionControls(agent,options,onChange,presentation={}){
+  const current=typeof S!=='undefined'?S.agents?.find(a=>a.name===agent.name&&a.kind===agent.kind):null;
+  if(current)agent={...agent,runtime_model_catalog:current.runtime_model_catalog,catalog_status:current.catalog_status,runtime_model_capabilities:current.runtime_model_capabilities};
+  let values=Object.assign({},options);
+  const wrap=document.createElement("div");wrap.className="execution-controls";
+  const model=document.createElement("select");model.className="sw";model.dataset.option="model";
+  model.setAttribute("aria-label","模型");
+  model.appendChild(optionEl("inherit","模型 · 配置默认（"+(agent.model||"执行器默认")+"）"));
+  const runtime=["claude_code","codex","mock"].includes(agent.kind);
+  if(runtime)model.appendChild(optionEl("runtime","模型 · 执行器默认"));
+  const choices=agent.model_choices||[];
+  const catalog=agent.runtime_model_catalog||[],actual=document.createElement('optgroup');actual.label='Agent 实际目录（不代表测试通过）';
+  catalog.forEach(row=>actual.appendChild(optionEl('catalog:'+row.id,row.name||row.id)));if(catalog.length)model.appendChild(actual);
+  const configured=document.createElement('optgroup');configured.label='当前配置模型（非读取结果）';choices.forEach((value,i)=>configured.appendChild(optionEl("m"+i,value)));if(choices.length)model.appendChild(configured);
+  model.appendChild(optionEl("custom","模型 · 自定义"));
+  model.value=!("model" in values)?"inherit":values.model===""&&runtime?"runtime"
+    :catalog.some(row=>row.id===values.model)?'catalog:'+values.model:choices.includes(values.model)?"m"+choices.indexOf(values.model):"custom";
+  const custom=document.createElement("input");custom.className="sw";custom.dataset.option="model-input";
+  custom.setAttribute("aria-label","自定义模型 ID");custom.placeholder="自定义模型 ID";
+  custom.value=values.model||"";custom.hidden=model.value!=="custom";
+  const effort=document.createElement("select");effort.className="sw";effort.dataset.option="effort";
+  effort.setAttribute("aria-label","思考程度");
+  const effortInput=document.createElement("input");effortInput.className="sw";effortInput.dataset.option="effort-input";
+  effortInput.setAttribute("aria-label","自定义思考参数");effortInput.placeholder="自定义思考参数";effortInput.value=values.effort||"";
+  const note=document.createElement("p");note.className="execution-note";note.dataset.option="capability-note";
+  const error=document.createElement("p");error.className="execution-error";error.setAttribute("role","status");
+  const save=document.createElement("button");save.className="chip";save.type="button";save.textContent="保存为此配置默认";
+  const labels={minimal:"最少",low:"低",medium:"中",high:"高",xhigh:"很高",max:"最高",ultra:"极高",off:"关闭"};
+  let levels=[];
+  const validation=()=>{
+    let message=executionSelectionError(agent,values);
+    if(model.value==="custom"&&!custom.value)message="请输入自定义模型 ID。";
+    if(effort.value==="custom"&&!effortInput.value)message="请输入自定义思考参数。";
+    wrap.dataset.error=message;error.textContent=message;error.hidden=!message;save.disabled=!!message;
+    return message;
+  };
+  const refreshEffort=()=>{
+    const cap=executionCapabilities(agent,values);
+    levels=cap.effort_levels||[];
+    effort.replaceChildren(optionEl("inherit","思考 · 配置默认（"+(agent.effort||"执行器默认")+"）"),optionEl("default","思考 · 执行器默认"));
+    levels.forEach((value,i)=>effort.appendChild(optionEl("e"+i,(cap.effort_control==="unverified"?"建议 · ":"")+(labels[value]||value)+" · "+value)));
+    if(cap.effort_control!=="unsupported")effort.appendChild(optionEl("custom","思考 · 自定义"));
+    effort.disabled=cap.effort_control==="unsupported";
+    effort.value=!("effort" in values)?"inherit":values.effort===""?"default":levels.includes(values.effort)?"e"+levels.indexOf(values.effort):"custom";
+    effortInput.hidden=effort.value!=="custom"||effort.disabled;
+    note.textContent=(agent.catalog_status&&agent.catalog_status!=='ready'?'实际目录尚不可用或已失效；保留你的型号选择。 ':'')+(cap.effort_control==="unsupported"?"此模型由执行器默认处理，不提供思考参数。":cap.effort_control==="unverified"?"模型与思考参数未验证；执行器可能拒绝或调整。不代表账号可用。":"思考档位来自"+(cap.source==="runtime"?"本地能力信息":"配置声明")+"；账号可用性未验证。");
+    validation();
+  };
+  const emit=saveNow=>onChange(Object.assign({},values),false,saveNow,validation());
+  model.onchange=()=>{
+    custom.hidden=model.value!=="custom";
+    if(model.value==="inherit")delete values.model;
+    else values.model=model.value==="runtime"?"":model.value==="custom"?custom.value:model.value.startsWith('catalog:')?model.value.slice(8):choices[Number(model.value.slice(1))];
+    if(agent.effort_supported)values.effort="";else delete values.effort;
+    effortInput.value="";refreshEffort();emit(true);
+  };
+  custom.oninput=()=>{values.model=custom.value;refreshEffort();emit(false)};
+  custom.onchange=()=>emit(true);
+  effort.onchange=()=>{
+    effortInput.hidden=effort.value!=="custom";
+    if(effort.value==="inherit")delete values.effort;
+    else values.effort=effort.value==="default"?"":effort.value==="custom"?effortInput.value:levels[Number(effort.value.slice(1))];
+    emit(true);
+  };
+  effortInput.oninput=()=>{values.effort=effortInput.value;emit(false)};
+  effortInput.onchange=()=>emit(true);
+  wrap.append(model,custom);
+  if(agent.effort_supported)wrap.append(effort,effortInput);
+  wrap.append(note,error);
+  save.onclick=()=>AsyncUI.run(save,"正在保存默认…",async()=>{
+    if(validation()){hint(wrap.dataset.error);return;}
+    if(!Object.keys(values).length){hint("请先选择模型或思考程度");return;}
+    try{
+      save.disabled=true;
+      const res=await fetch("/settings/agent-options",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({agent:agent.name,options:values})});
+      const data=await res.json().catch(()=>({}));
+      hint(res.ok?"默认已保存，下次运行生效":"保存失败："+(data.error||res.status));
+      if(res.ok)await refreshAgentMetadata();
+    }catch(_){hint("连不上 serve.py，默认没保存");}finally{validation();}
+  });
+  if(presentation.showSaveDefault!==false&&agent.kind!=='api')wrap.appendChild(save);
+  refreshEffort();return wrap;
+}
 /* agent 选择器内联放在流程节点下；抽屉只保留“任务详情”语义。 */
 function renderAgentPicker(card,taskId){
   const wrap=document.createElement("div");wrap.className="qbox agent-picker";
-  wrap.style.cssText="display:flex;flex-direction:column;gap:4px;margin-top:6px";
-  const KIND_BADGE={claude_code:"订阅",codex:"订阅",codebuddy:"积分",
-    openrouter:"$ 按量",dsh:"$ 按量 · 未计量",mock:"模拟"};
-  const TIER_BADGE={strong:"强推理",mid:"中坚",economy:"经济"};
-  const add=(name,label,badges,blurb,fallback,animal,selected)=>{
-    const button=document.createElement("button");
-    button.className="opt"+(selected?" on":"");
-    // 名称、徽章与说明来自能力矩阵，必须作为文本而不是 HTML 注入。
-    if(animal){const sprite=document.createElement("canvas");
-      paintSprite(sprite,animal,2);sprite.setAttribute("aria-hidden","true");
-      sprite.style.cssText="width:24px;height:24px;image-rendering:pixelated;flex:0 0 auto";
-      button.appendChild(sprite);}
-    const copy=document.createElement("span");
-    copy.textContent=label+(badges.length?"  ["+badges.join(" · ")+"]":"");
-    button.appendChild(copy);
-    button.title=blurb||fallback;
-    button.onclick=()=>{
-      if(name)card.overrides[taskId]=name;else delete card.overrides[taskId];
-      renderAll();
-    };
-    wrap.appendChild(button);
+  wrap.style.cssText="display:flex;flex-direction:column;gap:6px;margin-top:6px";
+  card.execution_options=card.execution_options||{};
+  const selected=card.agents.find(a=>a.name===card.overrides[taskId]);
+  const family=document.createElement("select");family.className="sw";family.dataset.option="agent";
+  family.setAttribute("aria-label","任务 Agent");family.appendChild(optionEl("","Agent · 自动"));
+  const groups=new Map(card.agents.filter(a=>a.enabled!==false).map(a=>[agentChoiceKey(a),a.group||a.kind]));
+  for(const [kind,label] of groups)family.appendChild(optionEl(kind,label));
+  family.value=selected?agentChoiceKey(selected):"";
+  family.onchange=()=>{
+    const agent=preferredProfile(card.agents,family.value,view.tasks.get(taskId));
+    if(agent)card.overrides[taskId]=agent.name;else delete card.overrides[taskId];
+    delete card.execution_options[taskId];if(card.selectionErrors)delete card.selectionErrors[taskId];renderAll();
   };
-  add("","自动（由路由决定）",[],"不指定，走既有的能力、难度与额度路由",
-      "",null,!card.overrides[taskId]);
-  for(const agent of card.agents){
-    const badges=[];
-    if(KIND_BADGE[agent.kind])badges.push(KIND_BADGE[agent.kind]);
-    if(TIER_BADGE[agent.tier])badges.push(TIER_BADGE[agent.tier]);
-    if(agent.specialty)badges.push(agent.specialty);
-    const fallback=[KIND_BADGE[agent.kind]||"自定义执行器",
-      TIER_BADGE[agent.tier]||"",agent.specialty?("专长 "+agent.specialty):""]
-      .filter(Boolean).join("；");
-    add(agent.name,agent.name,badges,agent.blurb||"",fallback,agent.animal,
-      card.overrides[taskId]===agent.name);
+  wrap.appendChild(family);
+  if(selected){
+    const agent=selected;const button=document.createElement("button");button.className="opt on";
+    const sprite=document.createElement("canvas");paintSprite(sprite,agent.animal||"cat",2);
+    sprite.style.cssText="width:24px;height:24px;image-rendering:pixelated";
+    const label=document.createElement("span");
+    const billing={claude_code:"订阅",codex:"订阅",dsh:"按量 · 未计量",codebuddy:"积分",openrouter:"按量",mock:"模拟"};
+    label.textContent=(agent.group||agent.kind)+" · "+(billing[agent.kind]||"自定义");
+    const fallback="工具权限："+(agent.allowed_tools||"Agent 默认")+"；选定后独占，不自动降级";
+    button.title=agent.blurb||fallback;button.append(sprite,label);wrap.appendChild(button);
+    const advanced=document.createElement("details");const title=document.createElement("summary");
+    title.textContent="高级配置 · "+selected.name;advanced.appendChild(title);
+    button.onclick=()=>{advanced.open=!advanced.open;};
+    const profile=document.createElement("select");profile.className="sw";
+    profile.setAttribute("aria-label","任务工具配置");
+    card.agents.filter(a=>agentChoiceKey(a)===agentChoiceKey(selected)&&a.enabled!==false).forEach(a=>profile.appendChild(optionEl(a.name,a.name+" · 工具 "+(a.allowed_tools||"Agent 默认"))));
+    profile.value=selected.name;profile.onchange=()=>{
+      card.overrides[taskId]=profile.value;delete card.execution_options[taskId];if(card.selectionErrors)delete card.selectionErrors[taskId];renderAll();};
+    advanced.appendChild(profile);wrap.appendChild(advanced);
+    if(!Array.isArray(selected.model_choices)){
+      delete card.execution_options[taskId];if(card.selectionErrors)delete card.selectionErrors[taskId];
+      const note=document.createElement('div');note.className='gate-note';
+      note.textContent='当前服务尚未支持模型设置；此任务按所选 Agent 的配置默认执行。';wrap.appendChild(note);
+      return wrap;
+    }
+    card.selectionErrors=card.selectionErrors||{};
+    const controls=createExecutionControls(selected,card.execution_options[taskId]||{},(next,_render,_save,error)=>{card.execution_options[taskId]=next;card.selectionErrors[taskId]=error;});
+    card.selectionErrors[taskId]=controls.dataset.error||"";
+    if(card.posting)for(const input of controls.querySelectorAll('input,select,button'))input.disabled=true;
+    wrap.appendChild(controls);
   }
   return wrap;
 }
@@ -1127,12 +1418,17 @@ function togglePicker(card,taskId){
 }
 async function postGate(card,decision){
   if(card.posting||card.frozen)return;
+  if(decision==="approve")for(const [id,options] of Object.entries(card.execution_options||{})){
+    const agent=card.agents.find(a=>a.name===card.overrides[id]);
+    const error=card.selectionErrors?.[id]||(agent?(Array.isArray(agent.model_choices)?executionSelectionError(agent,options):"当前服务尚未支持模型设置。"):"请选择有效的 Agent。");
+    if(error){hint("放行前请修正："+error);return;}
+  }
   card.posting=true;renderAll();
   try{
     const res=await fetch("/gate",{method:"POST",
       headers:{"Content-Type":"application/json"},
       body:JSON.stringify({gate_id:card.gateId,gate_token:card.gateToken,decision:decision,
-                           overrides:card.overrides||{}})});
+                           overrides:card.overrides||{},...(card.agents.some(a=>Array.isArray(a.model_choices))?{execution_options:card.execution_options||{}}:{})})});
     const data=await res.json().catch(()=>({}));
     if(!res.ok){card.posting=false;renderAll();
       hint("放行失败："+((data&&data.error)||res.status));return;}
@@ -1140,19 +1436,87 @@ async function postGate(card,decision){
     renderAll();hint(decision==="approve"?"已放行":decision==="skip"?"已跳过":"已取消");
   }catch(_){card.posting=false;renderAll();hint("连不上 serve.py，无法放行");}
 }
+const chatRender={key:null,rows:[],workers:null};
+function retainChildren(parent,nodes){
+  nodes.forEach((node,index)=>{if(parent.children[index]!==node)parent.insertBefore(node,parent.children[index]||null);});
+  const retained=new Set(nodes);for(const child of [...parent.children])if(!retained.has(child))child.remove();
+}
+function updateProgress(existing,fresh){
+  const children=[...fresh.children].map((next,index)=>{
+    const old=existing.children[index];
+    if(!old||old.className!==next.className)return next;
+    if(next.classList.contains("st")){
+      if(old.querySelector(".d").textContent!==next.querySelector(".d").textContent)return next;
+      old.querySelector(".el").textContent=next.querySelector(".el").textContent;return old;
+    }
+    return old.textContent===next.textContent?old:next;
+  });
+  retainChildren(existing,children);return existing;
+}
+function messageActions(message){
+  const actions=document.createElement("div");actions.className="message-actions";
+  for(const [label,glyph,kind] of [["复制消息","copy","copy"],["重新发送","rotate-cw","resend"],["修改提示词","pencil","edit"]]){
+    const button=document.createElement("button");button.className="icon-only";button.type="button";button.title=label;button.setAttribute("aria-label",label);
+    const icon=document.createElement("i");icon.dataset.lucide=glyph;icon.setAttribute("aria-hidden","true");button.append(icon);
+    if(kind!=="copy")button.disabled=draftLocked();
+    button.onclick=()=>{
+      if(kind==="copy")return AsyncUI.run(button,"正在复制…",async()=>{try{await navigator.clipboard.writeText(message.text);hint("已复制");}catch(_){hint("复制失败，请重试或手动选择文字复制");}});
+      if(!setPromptText(message.text))return;
+      S.pendingChoiceAnswers=null;
+      window.GoalQueue?.inputChanged();$("#prompt").dispatchEvent(new Event("input",{bubbles:true}));
+      if(kind==="edit")$("#prompt").select();
+      hint("内容已放回输入框，确认后发送");
+    };
+    actions.append(button);
+  }
+  return actions;
+}
+function renderWorkerProgress(){
+  if(view.status!=="running")return null;
+  const tasks=[...view.tasks.values()].filter(t=>t.status==="running");if(!tasks.length)return null;
+  const box=document.createElement("div");box.className="worker-progress";
+  for(const task of tasks){
+    const row=document.createElement("section"),label=document.createElement("strong"),title=document.createElement("small");row.dataset.taskId=task.id;
+    label.className="work-shimmer";label.textContent="员工工作中";title.textContent=(task.agent||"Agent")+" · "+(task.title||task.id);row.append(label,title);
+    for(const entry of task.log.filter(entry=>entry.kind==="思考"&&entry.text)){
+      const detail=document.createElement("div");detail.className="work-detail";detail.textContent=entry.text;row.append(detail);
+    }
+    box.append(row);
+  }
+  return box;
+}
 function renderChat(sess){
-  const chat=$("#chat");chat.innerHTML="";
-  const msgs=sess?sess.chat.slice():[];
+  const chat=$("#chat"),sc=$("#chat-scroll"),oldTop=sc.scrollTop;
+  const goal=S.mode==='live'?window.GoalQueue?.selected():null;
+  const key=S.mode+":"+(goal?.id||sess?.runId||sess?.id||S.chatSession||"draft");
+  const changed=chatRender.key!==key,stick=changed||sc.scrollHeight-sc.clientHeight-oldTop<2;
+  const previous=changed?[]:chatRender.rows,rows=[],nodes=[];
+  const msgs=goal?GoalQueue.chatMessages(goal):(sess?sess.chat.slice():[]);
   const showPreChat=S.chatSession?S.activeIdx===S.sessions.length
                                  :S.activeIdx>=S.sessions.length-1;
-  if(S.preChat.length&&showPreChat)msgs.push.apply(msgs,S.preChat);
-  if(S.pendingGoal&&S.activeIdx>=S.sessions.length-1)
+  if(!goal&&S.preChat.length&&showPreChat)msgs.push.apply(msgs,S.preChat);
+  if(!goal&&S.pendingGoal&&S.activeIdx>=S.sessions.length-1)
     msgs.push({role:"user",text:S.pendingGoal.text,ts:S.pendingGoal.ts},{role:"manager",text:"__typing__",ts:nowTs()});
-  if(!msgs.length){
+  let workers=renderWorkerProgress();
+  if(!msgs.length&&!workers){
     chat.innerHTML='<div id="chat-empty"><div class="px">AGENT HUB</div>'+
       '<div>把目标告诉经理，它会拆解任务并派给合适的动物员工。<br>DEMO 模式下会播放一次模拟运行。</div></div>';
-    return;}
-  for(const m of msgs){
+    chatRender.key=key;chatRender.rows=[];chatRender.workers=null;return;}
+  for(const [index,m] of msgs.entries()){
+    const card=m.card?.kind==="choices"&&!m.card.frozen?{...m.card,answers:undefined}:m.card;
+    const signature=JSON.stringify([m.role,m.text,m.ts,card,m.text==="__typing__"?[m.goalProgress||S.mgrProgress,Math.floor(Date.now()/1000)]:null]);
+    const old=previous[index];
+    // Only choices depend entirely on the card. Other cards also read run state,
+    // change statistics and agents, so keep their existing refresh behavior.
+    if(old&&old.signature===signature&&(!m.card||m.card.kind==="choices")){
+      if(m.card?.kind==="choices")m.card=old.card;
+      for(const button of old.node.querySelectorAll('.message-actions button:not([aria-label="复制消息"])'))button.disabled=draftLocked();
+      rows.push(old);nodes.push(old.node);continue;
+    }
+    if(old?.typing&&m.text==="__typing__"){
+      updateProgress(old.node.querySelector(".mprog"),renderManagerProgress(m.goalProgress||S.mgrProgress,m.goalProgress?m.ts:S.mgrStart||m.ts,true));
+      const row={...old,signature};rows.push(row);nodes.push(row.node);continue;
+    }
     const d=document.createElement("div");d.className="msg "+m.role;
     const av=document.createElement("div");av.className="av";
     if(m.role==="manager"){const c=document.createElement("canvas");av.appendChild(c);paintSprite(c,"captain",2);}
@@ -1164,17 +1528,31 @@ function renderChat(sess){
     if(m.text==="__typing__"){
       // 有进度行时就不再重复那句纯文本占位符 —— 进度行自己就在说
       // 「正在思考」，而且带秒数，信息更多
-      if(S.mgrLive)text.appendChild(
+      if(m.goalProgress)text.appendChild(renderManagerProgress(m.goalProgress,m.ts,true));
+      else if(S.mgrLive)text.appendChild(
         renderManagerProgress(S.mgrProgress,S.mgrStart||nowTs(),true));
-      else text.innerHTML='<span class="typing">正在思考…</span>';
+      else text.appendChild(renderManagerProgress([],m.ts,true));
     }
     else text.textContent=m.text;
     body.append(who,text);
+    if(m.role==="user")body.appendChild(messageActions(m));
     if(m.card)body.appendChild(cardEl(m.card,m.ts));
-    d.append(av,body);chat.appendChild(d);
+    d.append(av,body);nodes.push(d);rows.push({signature,node:d,card:m.card,typing:m.text==="__typing__"});
   }
+  if(workers&&!changed&&chatRender.workers){
+    const existing=chatRender.workers,sections=[...workers.children].map(section=>{
+      const old=[...existing.children].find(row=>row.dataset.taskId===section.dataset.taskId);
+      return old?updateProgress(old,section):section;
+    });
+    retainChildren(existing,sections);workers=existing;
+  }
+  chatRender.workers=workers;if(workers)nodes.push(workers);
+  if(goal){const status=document.createElement("div");GoalQueue.renderStatus(status,goal);nodes.push(...status.children);}
+  // Retain unchanged nodes in place: replacing all children cancels focus and IME.
+  retainChildren(chat,nodes);
+  chatRender.key=key;chatRender.rows=rows;
   icons();
-  const sc=$("#chat-scroll");sc.scrollTop=sc.scrollHeight;
+  sc.scrollTop=stick?sc.scrollHeight:oldTop;
 }
 
 /* ---------- drawer ---------- */
@@ -1191,6 +1569,7 @@ function renderDrawer(){
   $("#d-meta").textContent=(t.agent||"未派单")+(t.cost?" · $"+t.cost.toFixed(4):"")+
     ((t.depends_on&&t.depends_on.length)?" · 依赖 "+t.depends_on.join(" / "):"")+
     (t.stale?" · 产出已过期":"");
+  $("#d-rerun").hidden=!(canRerun()&&(t.status==="failed"||t.status==="skipped"||t.stale));
   const body=$("#d-body");body.innerHTML="";
   if(t.files&&t.files.length){
     const fw=document.createElement("div");
@@ -1198,7 +1577,7 @@ function renderDrawer(){
     body.appendChild(sec("交付文件 · 点开可预览",fw));
   }
   body.appendChild(sec("产出全文",(()=>{const p=document.createElement("div");p.className="d-out";
-    p.textContent=t.output||"（尚无产出）";return p;})()));
+    p.textContent=fullOutputOf(t)||t.output||"（尚无产出）";return p;})()));
   const logWrap=document.createElement("div");
   for(const l of t.log){const r=document.createElement("div");r.className="d-log";
     r.innerHTML='<span class="ts">'+esc(l.ts)+'</span><span><b>'+esc(l.kind)+"</b> "+esc(l.text)+"</span>";
@@ -1216,11 +1595,42 @@ function renderDrawer(){
     d.append(l,node);return d;}
 }
 $("#d-close").onclick=()=>{S.drawer=null;renderDrawer();};
-$("#d-rerun").onclick=()=>{if(S.drawer)sendText("重跑任务 "+S.drawer);};
+$("#d-rerun").onclick=rerunFailed;
+/* 重跑走 POST /rerun（main.py --resume）：失败、被跳过、已过期的任务重新执行，
+   已完成的原样恢复。以前这两个按钮是把「重跑任务 t3」当新目标发给经理。 */
+function canRerun(){
+  // /rerun 只作用于服务端当前这次运行，也就是侧栏最新的那一条
+  return S.mode==="live"&&!S.busy&&S.sessions.length>0&&S.activeIdx===S.sessions.length-1;
+}
+async function rerunFailed(){
+  if(!canRerun())return;
+  if(!window.confirm("重跑这次运行里失败、被跳过和已过期的任务？已完成的任务保留，不会重跑。"))return;
+  try{
+    const res=await fetch("/rerun",{method:"POST",headers:{"Content-Type":"application/json"},body:"{}"});
+    const data=await res.json().catch(()=>({}));
+    if(!res.ok){hint("重跑失败："+((data&&data.error)||res.status));return;}
+    S.drawer=null;hint("已提交重跑，等引擎重新派单…");renderAll();
+  }catch(_){hint("连不上 serve.py，无法重跑");}
+}
 $("#d-ask").onclick=()=>{if(S.drawer&&setPromptText("@"+S.drawer+" ")){
   S.drawer=null;renderDrawer();}};
 $("#d-copy").onclick=()=>{const t=S.drawer&&view.tasks.get(S.drawer);
-  if(t&&navigator.clipboard)navigator.clipboard.writeText(t.output||"").then(()=>hint("产出已复制"));};
+  if(t&&navigator.clipboard)navigator.clipboard.writeText(fullOutputOf(t)||t.output||"").then(()=>hint("产出已复制"));};
+/* 事件里只有 200 字预览（task_completed.preview），全文按需从这次运行的黑板取
+   （bug B7）。renderDrawer 每次轮询都会调，所以按「运行|任务|完成时刻」缓存，
+   同一份只取一次；任务重跑后完成时刻变了，自然换新。 */
+function fullOutputOf(t){
+  const sess=selectedSession();
+  if(S.mode!=="live"||!sess||t.status!=="done")return null;
+  const key=(sess.runId||"")+"|"+t.id+"|"+(t.doneTs||"");
+  if(key in S.fullOutputs)return S.fullOutputs[key];
+  S.fullOutputs[key]=null;   // 占位：取回之前不重复请求
+  fetch("/task/output?task="+encodeURIComponent(t.id)+"&run="+encodeURIComponent(sess.runId||""))
+    .then(r=>r.ok?r.json():null)
+    .then(d=>{if(d&&typeof d.output==="string"){S.fullOutputs[key]=d.output;renderDrawer();}})
+    .catch(()=>{});
+  return null;
+}
 
 /* ---------- file preview ----------
    任务真正写在磁盘上的文件由后端记账：hub/artifacts.py 对 workdir 做
@@ -1248,23 +1658,25 @@ function fileRow(taskId,f){
   b.onclick=()=>openPreview(taskId,f);
   return b;
 }
-function openPreview(taskId,f){S.preview={task:taskId,path:f.path,size:f.size};
+function openPreview(taskId,f){closeReview();S.preview={task:taskId,path:f.path,size:f.size};
   S.pvDiff=false;pvShown=null;renderPreview();}
 // renderAll() 每次轮询到新事件都会调一遍这里，所以必须幂等：同一个文件
 // 已经渲染过就直接返回，否则每秒都会重新 fetch 一次、正文闪回"读取中…"
 let pvShown=null;
 function renderPreview(){
+  if(S.review){renderReview();return;}   // 审阅改动占着面板（change-safety-net.md §5.4）
   if(S.pvDiff)return;   // git diff 视图持有面板，等用户切回文件视图
   const wrap=$("#pv-wrap"),p=S.preview;
   const key=p?p.task+"\n"+p.path:null;
-  if(key===pvShown)return;
+  // B35：关面板时 key 和 pvShown 都是 null，以前在这里直接返回，面板从来没收起来过
+  if(key===pvShown&&(key!==null||!wrap.classList.contains("on")))return;
   pvShown=key;
   if(!p){wrap.classList.remove("on");$("#pv-body").innerHTML="";return;}
-  wrap.classList.add("on");
+  wrap.classList.add("on");$("#pv-dl").hidden=false;
   $("#pv-kicker").textContent=p.task+" 的交付物"+(p.size!=null?" · "+fmtBytes(p.size):"");
   $("#pv-title").textContent=p.path;
   const url=fileUrl(p.task,p.path);
-  $("#pv-dl").href=url;$("#pv-dl").setAttribute("download",p.path.split("/").pop());
+  $("#pv-dl").href=url;$("#pv-dl").setAttribute("download",p.path.split(/[\\/]/).pop());
   const body=$("#pv-body");body.innerHTML="";
   // DEMO 模式的事件是前端伪造的，磁盘上并没有这些文件，说清楚而不是让
   // 用户对着一个永远转不出来的加载态猜
@@ -1367,7 +1779,178 @@ async function openDiff(){
 }
 $("#pv-diff").onclick=openDiff;
 $("#pv-file").onclick=()=>{S.pvDiff=false;pvShown=null;renderPreview();};
-$("#pv-close").onclick=()=>{S.preview=null;S.pvDiff=false;pvShown=null;renderPreview();};
+$("#pv-close").onclick=()=>{S.preview=null;S.pvDiff=false;pvShown=null;closeReview();renderPreview();};
+
+/* ---------- 审阅改动（change-safety-net.md §5.4）：复用右侧预览面板 ---------- */
+const RV_ST={A:"新增",M:"修改",D:"删除"};
+const RV_KIND={run:"运行本身",rerun:"重跑",followup:"追问"};
+let rvShown=null;
+function openReview(runId){
+  S.review={run:runId||""};S.preview=null;S.pvDiff=false;pvShown=null;
+  S.reviewDiff=null;S.reviewUnsel=new Set();S.reviewResult=null;rvShown=null;
+  renderPreview();loadChanges(runId);
+}
+function closeReview(){S.review=null;S.reviewDiff=null;rvShown=null;}
+function renderReview(){
+  const runId=S.review.run,d=S.changes[runId];
+  // renderAll() 每次轮询都会走到这里：跟 renderPreview 一样按 key 幂等
+  const key=[runId,S.changesVer,S.reviewBusy,S.busy,S.reviewResult?S.reviewResult.ts:"",
+    S.reviewDiff?S.reviewDiff.seg+"\n"+S.reviewDiff.path:""].join("|");
+  if(key===rvShown)return;
+  rvShown=key;
+  $("#pv-wrap").classList.add("on");
+  $("#pv-kicker").textContent="审阅改动";
+  const sess=S.sessions.find(x=>(x.runId||"")===runId);
+  $("#pv-title").textContent=sess?sess.goal:("运行 "+(runId||"（当前）"));
+  $("#pv-dl").hidden=true;
+  const body=$("#pv-body");body.innerHTML="";
+  if(S.mode!=="live"){body.innerHTML=pvNote("DEMO 模式没有真实改动","真实跑一次之后，这里能看到那次运行改了哪些文件。");icons();return;}
+  if(!d){body.innerHTML='<div class="pv-pad" style="color:var(--dim);font-size:12.5px">读取中…</div>';return;}
+  if(d.error){body.innerHTML=pvNote("读不到改动记录",d.error);icons();return;}
+  if(S.reviewDiff)renderReviewDiff(body,runId,S.reviewDiff);
+  else renderReviewList(body,runId,d);
+}
+function rvNotes(seg){
+  const out=[];
+  if(seg.error)out.push("这一段看不了："+seg.error);
+  else if(seg.open)out.push("这一段还没结束（运行还在进行）。");
+  if(seg.note)out.push(seg.note);
+  if(seg.incomplete)out.push("有任务的检查点没拍到：这一段只能审阅，不能回滚。");
+  if((seg.skipped||[]).length)
+    out.push("这些文件不在检查点里："+seg.skipped.map(s=>s.path||s.reason).join("、"));
+  return out;
+}
+function rvGroup(box,label,files,seg){
+  const lab=document.createElement("div");lab.className="rv-grp";lab.textContent=label;box.appendChild(lab);
+  for(const f of files){
+    const row=document.createElement("div");row.className="rv-f";
+    const cb=document.createElement("input");cb.type="checkbox";cb.className="rv-cb";
+    cb.dataset.path=f.path;
+    cb.disabled=!!f.nested||!seg.can_rollback;
+    cb.checked=!cb.disabled&&!S.reviewUnsel.has(f.path);
+    cb.onchange=()=>{
+      if(cb.checked)S.reviewUnsel.delete(f.path);else S.reviewUnsel.add(f.path);
+      // 同一个文件可能出现在好几段里：勾选跟着路径走
+      for(const other of document.querySelectorAll("#pv-body .rv-cb"))
+        if(other.dataset.path===f.path&&!other.disabled)other.checked=cb.checked;
+    };
+    const st=document.createElement("span");st.className="rv-st st-"+f.status;
+    st.textContent=RV_ST[f.status]||f.status;
+    const p=document.createElement("button");p.className="rv-path";p.textContent=f.path;
+    p.title="看这个文件在这一段里的改动";
+    p.onclick=()=>{S.reviewDiff={seg:seg.n,path:f.path};renderPreview();};
+    const n=document.createElement("span");n.className="rv-n";
+    n.textContent=f.nested?"嵌套仓库，不回滚":f.binary?"二进制":"+"+f.added+" −"+f.deleted;
+    row.append(cb,st,p,n);box.appendChild(row);
+  }
+}
+function rvResult(r){
+  const box=document.createElement("div");box.className="rv-seg";
+  const h=document.createElement("h4");box.appendChild(h);
+  h.textContent=(r.kind==="undo"?(r.undone?"已撤销回滚":"撤销未完成"):"回滚完成")+"：恢复 "+r.restored.length+" 个文件"+
+    (r.skipped.length?"，跳过 "+r.skipped.length+" 个":"");
+  const line=text=>{const el=document.createElement("div");el.className="rv-note";
+    el.textContent=text;box.appendChild(el);};
+  r.restored.forEach(p=>line("恢复 · "+p));
+  r.skipped.forEach(s=>line("跳过 · "+(s.path||"")+" —— "+s.reason));
+  if(r.error)line(r.kind==="undo"?r.error:"中途出错："+r.error+"。可以用「撤销最近一次回滚」退回去。");
+  else if(r.kind==="undo"&&!r.undone)line("仍有文件未撤销，处理跳过原因后可以重试。");
+  return box;
+}
+function renderReviewList(body,runId,d){
+  const note=(text,parent)=>{const el=document.createElement("div");el.className="rv-note";
+    el.textContent=text;parent.appendChild(el);};
+  const top=document.createElement("div");top.className="rv-top";body.appendChild(top);
+  top.textContent="运行期间你自己改的文件也会出现在这里。回滚只恢复这次运行留下的样子，"+
+    "之后又被改过的文件会跳过；工作目录之外的事（装包、联网、git push）不在检查点里。";
+  if(!d.checkpoints.on)note("这次运行不能一键回滚："+(d.checkpoints.reason||"没有检查点"),top);
+  if(S.reviewResult)body.appendChild(rvResult(S.reviewResult));
+  const paths=new Set();
+  for(const seg of d.segments.slice().reverse()){          // 新的段在上
+    const box=document.createElement("div");box.className="rv-seg";body.appendChild(box);
+    const h=document.createElement("h4");box.appendChild(h);
+    h.textContent=(RV_KIND[seg.kind]||seg.kind)+(seg.task_id?" "+seg.task_id:"")+
+      " · 第 "+seg.n+" 段 · "+(seg.files.length?seg.files.length+" 个文件":"没有改动");
+    for(const t of rvNotes(seg))note(t,box);
+    const claimed=new Set();
+    for(const g of seg.tasks){
+      const files=seg.files.filter(f=>g.paths.includes(f.path));
+      if(!files.length)continue;
+      rvGroup(box,"任务 "+g.id+" · "+g.title,files,seg);
+      files.forEach(f=>claimed.add(f.path));
+    }
+    const rest=seg.files.filter(f=>!claimed.has(f.path));
+    if(rest.length)rvGroup(box,seg.tasks.length?"没归到任务上的改动（规划阶段，或你自己改的）":"改动的文件",rest,seg);
+    if(seg.can_rollback)seg.files.forEach(f=>{if(!f.nested)paths.add(f.path);});
+  }
+  const foot=document.createElement("div");foot.className="rv-foot";body.appendChild(foot);
+  const rollbacks=d.rollbacks||[],last=rollbacks[rollbacks.length-1];
+  const pending=!!(last&&!last.undone&&last.pre&&last.post&&(last.restored||[]).length);
+  const rb=document.createElement("button");rb.className="btn primary";
+  rb.innerHTML='<i data-lucide="undo-2"></i>回滚所选文件';
+  rb.disabled=!paths.size||S.reviewBusy||S.busy||pending;
+  rb.onclick=()=>rollbackSelected(runId,[...paths].filter(p=>!S.reviewUnsel.has(p)));
+  foot.appendChild(rb);
+  if(last&&!last.undone){
+    const ub=document.createElement("button");ub.className="btn";
+    ub.innerHTML='<i data-lucide="redo-2"></i>撤销最近一次回滚';
+    ub.disabled=S.reviewBusy||S.busy;ub.onclick=()=>undoRollback(runId);
+    foot.appendChild(ub);
+  }
+  if(S.busy)note("有运行在进行，结束后才能回滚。",foot);
+  if(pending)note("先撤销上一次回滚，才能再回滚别的文件。",foot);
+  icons();
+}
+async function renderReviewDiff(body,runId,q){
+  const head=document.createElement("div");head.className="rv-top rv-diffhead";
+  const back=document.createElement("button");back.className="btn ghost";
+  back.innerHTML='<i data-lucide="arrow-left"></i>返回清单';
+  back.onclick=()=>{S.reviewDiff=null;renderPreview();};
+  const name=document.createElement("span");name.className="rv-path";name.textContent=q.path;
+  head.append(back,name);
+  const pre=document.createElement("pre");pre.className="pv-txt pv-pad";
+  pre.style.cssText="white-space:pre;overflow:auto";pre.textContent="读取中…";
+  body.append(head,pre);icons();
+  try{
+    const r=await fetch("/run/changes/diff?run="+encodeURIComponent(runId)+"&seg="+
+      encodeURIComponent(String(q.seg))+"&path="+encodeURIComponent(q.path));
+    const d=await r.json().catch(()=>({}));
+    if(S.reviewDiff!==q)return;                 // 等它回来之前已经换了文件
+    pre.textContent=(!r.ok||d.ok===false)
+      ?"看不了这个文件的改动："+((d&&d.error)||("HTTP "+r.status))
+      :(d.diff||"（没有文本差异，可能是二进制文件）")+(d.truncated?"\n\n—— diff 过长已截断 ——":"");
+  }catch(e){if(S.reviewDiff===q)pre.textContent="看不了这个文件的改动："+(e.message||e);}
+}
+async function rollbackSelected(runId,paths){
+  if(!paths.length){hint("没有勾选任何文件");return;}
+  if(!window.confirm("恢复到这次运行改动之前；之后又被改过的文件会跳过。\n确定回滚所选的 "+
+    paths.length+" 个文件？"))return;
+  await reviewPost("/run/rollback",{run:runId,paths:paths},"rollback");
+}
+async function undoRollback(runId){
+  if(!window.confirm("撤销最近一次回滚？回滚之后又被改过的文件会跳过。"))return;
+  await reviewPost("/run/rollback/undo",{run:runId},"undo");
+}
+async function reviewPost(url,payload,kind){
+  S.reviewBusy=true;renderPreview();
+  try{
+    const r=await fetch(url,{method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify(payload)});
+    const d=await r.json().catch(()=>({}));
+    if(!r.ok && !(kind==="undo"&&d&&d.undone===false)){
+      hint((kind==="undo"?"撤销失败：":"回滚失败：")+((d&&d.error)||r.status));return;}
+    S.reviewResult={kind:kind,ts:Date.now(),restored:d.restored||[],skipped:d.skipped||[],
+      error:d.error||"",undone:d.undone};
+  }catch(e){hint("请求失败："+(e.message||e));}
+  finally{S.reviewBusy=false;await loadChanges(payload.run);}
+}
+// 设置页「运行历史」的「审阅」链到 dashboard.html#review=<运行 id>：旧运行只能从
+// 那里进来 —— 仪表盘侧栏只有本页打开之后的会话
+function reviewFromHash(){
+  const m=/^#review=([0-9a-f]{1,32})$/.exec(location.hash||"");
+  if(m)openReview(m[1]);
+}
+window.addEventListener("hashchange",reviewFromHash);
 
 /* ---------- tabs / strip / theme ---------- */
 function setStrip(v){S.strip=v;$("#strip").classList.toggle("collapsed",!v);
@@ -1400,7 +1983,7 @@ function setTheme(t){S.theme=t;document.documentElement.dataset.theme=t;
 $("#theme-btn").onclick=()=>setTheme(S.theme==="dark"?"light":"dark");
 window.addEventListener("keydown",e=>{
   if((e.metaKey||e.ctrlKey)&&e.key==="\\"){e.preventDefault();setStrip(!S.strip);}
-  if(e.key==="Escape"&&S.preview){S.preview=null;S.pvDiff=false;pvShown=null;renderPreview();return;}
+  if(e.key==="Escape"&&(S.preview||S.review)){S.preview=null;S.pvDiff=false;pvShown=null;closeReview();renderPreview();return;}
   if(e.key==="Escape"&&S.drawer){S.drawer=null;renderDrawer();}
 });
 
@@ -1411,26 +1994,35 @@ window.addEventListener("keydown",e=>{
    不会有任何提示，界面只是安静地允许了一次本不该允许的操作。
    现在判据一处定义、控件一处登记：新增控件加进 DRAFT_CONTROLS，新增条件
    改 draftLocked()，两者都不必动第二个地方。 */
-const DRAFT_CONTROLS=["#prompt","#new-btn","#mode-btn","#sw-manager","#sw-assign","#sw-gate"];
+const DRAFT_CONTROLS=["#prompt","#mode-btn","#sw-manager-agent","#sw-manager","#sw-assign","#sw-gate"];
 function draftLocked(){
   // sendPending：这一轮经理还在飞（本页发的，或刷新后从服务端恢复出来的）。
   // restoringSessions：开机恢复还没落定，此刻界面状态未必是服务端的真相。
-  return S.sendPending||S.restoringSessions;
+  return S.restoringSessions||(S.mode==='live'&&window.GoalQueue?.selected()?GoalQueue.draftPending():S.sendPending);
+}
+
+function selectedSession(){
+  return S.mode==='live'&&window.GoalQueue?.selected()?GoalQueue.session():S.sessions[S.activeIdx];
 }
 
 function renderAll(){
-  const sess=S.sessions[S.activeIdx];
+  const sess=selectedSession();
   view=computeView(sess);
   renderSide();renderChat(sess);renderPane();renderDrawer();renderPreview();
   const done=[...view.tasks.values()].filter(t=>t.status==="done").length;
   $("#run-text").textContent=view.tasks.size
-    ? ({running:"运行中",done:"已完成",failed:"有失败",cancelled:"已取消",idle:"待命"}[view.status]||"")+" · "+done+"/"+view.tasks.size+" · $"+view.cost.toFixed(4)
+    ? ({running:"运行中",done:"已完成",failed:"有失败",cancelled:"已取消",idle:"待命"}[view.status]||"")+" · "+done+"/"+view.tasks.size+" · "+costText(view.cost,view.costComplete)
     : "待命";
   const locked=draftLocked();
   for(const sel of DRAFT_CONTROLS)$(sel).disabled=locked;
+  $("#new-btn").disabled=S.restoringSessions||(S.mode!=='live'&&S.sendPending);
+  for(const control of $("#manager-options").querySelectorAll("select,input,button"))control.disabled=locked;
   // 发送多一条：LIVE 模式下有 run 在跑时也不能发。其余条件必须走同一个
   // 判据，否则又变回七份各自维护的布尔式。
-  $("#send").disabled=locked||(S.busy&&S.mode==="live");
+  $("#send").disabled=locked||runBlocksSend();
+  const queuePosting=S.mode==='live'&&window.GoalQueue?.requestPending();
+  $("#send").classList.toggle('goal-sending',!!queuePosting);
+  $("#send").setAttribute('aria-busy',queuePosting?'true':'false');
   $("#cancel-run").hidden=!(S.busy&&S.mode==="live");
   $("#export-run").hidden=!(S.mode==="live"&&view.tasks.size>0);
   $("#pv-diff").hidden=!(S.mode==="live"&&S.preview&&!S.pvDiff);
@@ -1463,21 +2055,27 @@ function renderWorkdirChip(){
   const name=$("#wk-name"),chip=$("#wk-chip");
   if(!name||!chip)return;
   const path=S.workdir||"";
-  name.textContent=path?(path.split("/").filter(Boolean).pop()||path):"工作区";
+  name.textContent=path?(path.split(/[\\/]/).filter(Boolean).pop()||path):"工作区";
+  name.title=path||"未配置工作区";
   // DOM 属性赋值不经过 HTML 解析，比字符串拼 title/outerHTML 更安全；
   // 也不能用 outerHTML 重建节点，否则会丢掉下面绑定的 onclick。
-  chip.title=(path||"未配置工作区")+" · 下次运行生效";
+  chip.title=(path||"未配置工作区")+" · 后续提交的目标使用此工作区";
+}
+function showWorkdirManual(path){
+  $("#wk-path").hidden=false;$("#wk-save").hidden=false;
+  if(path)$("#wk-path").value=path;
+  $("#wk-path").focus();
 }
 async function saveWorkdir(path){
   try{
     const res=await fetch("/settings/workdir",{method:"POST",
       headers:{"Content-Type":"application/json"},body:JSON.stringify({path:path})});
     const data=await res.json().catch(()=>({}));
-    if(!res.ok){hint("保存失败："+((data&&data.error)||res.status));return;}
+    if(!res.ok){showWorkdirManual(path);hint("保存失败："+((data&&data.error)||res.status));return;}
     S.workdir=data.workdir||path;renderWorkdirChip();
     $("#wk-path").hidden=true;$("#wk-save").hidden=true;$("#wk-path").value="";
-    hint("工作区已保存，下次运行生效");
-  }catch(_){hint("连不上 serve.py，无法保存工作区");}
+    hint("工作区已保存；已提交目标保留原工作区");
+  }catch(_){showWorkdirManual(path);hint("连不上 serve.py，无法保存工作区");}
 }
 $("#wk-chip").onclick=async()=>{
   try{
@@ -1488,21 +2086,52 @@ $("#wk-chip").onclick=async()=>{
     if(res.ok&&data.path){await saveWorkdir(data.path);return;}
     $("#wk-path").hidden=false;$("#wk-save").hidden=false;$("#wk-path").focus();
     hint((data&&data.error)||"请手动粘贴文件夹绝对路径");
-  }catch(_){hint("连不上 serve.py");}
+  }catch(_){showWorkdirManual();hint("连不上 serve.py，请手动输入路径后重试");}
 };
 $("#wk-save").onclick=()=>{
   const path=$("#wk-path").value.trim();
   if(!path){hint("路径是空的");return;}
-  saveWorkdir(path);
+  return saveWorkdir(path);
 };
 
+for(const id of ["wk-chip","wk-save"]){const button=document.getElementById(id),handler=button.onclick;button.onclick=async e=>{await AsyncUI.run(button,"等待选择与保存…",()=>handler(e));renderWorkdirChip();};}
+
 /* ---------- 门控与模型偏好（config 只记 UI，生效值由后端转成 argv） ---------- */
+let managerExecutionOptions={};
+let agentMetadataRevision=0;
+async function refreshAgentMetadata(){
+  const token=++agentMetadataRevision;
+  const res=await fetch("/agents");
+  if(!res.ok)return;
+  const data=await res.json();if(token!==agentMetadataRevision)return;S.agents=data.agents||[];
+  for(const option of $("#sw-manager").options)if(option.value){
+    const agent=S.agents.find(a=>a.name===option.value);option.disabled=!agent||!agent.installed||agent.enabled===false;
+  }
+  renderManagerOptions(); // Gate cards retain the running engine's metadata snapshot.
+}
+for(const name of ['agent-connections-changed','agent-catalog-changed'])window.addEventListener(name,()=>refreshAgentMetadata().catch(()=>hint('Agent 信息刷新失败，请重试')));
+function renderManagerOptions(){
+  const box=$("#manager-options");box.replaceChildren();
+  const agent=S.agents.find(a=>a.name===$("#sw-manager").value);
+  if(!agent)return;
+  box.appendChild(createExecutionControls(agent,managerExecutionOptions,(next,_render,save)=>{
+    managerExecutionOptions=next;if(save)savePrefs();
+  }));
+  const note=document.createElement("div");note.className="gate-note";
+  note.textContent="经理配置从下一轮生效；自定义模型和思考参数由 Agent 验证。";box.appendChild(note);
+  for(const control of box.querySelectorAll("select,input,button"))control.disabled=draftLocked();
+}
 async function loadAgents(){
   try{
     const settingsRes=await fetch("/settings");
     if(!settingsRes.ok)return;
     const settings=await settingsRes.json();
     const prefs=settings.ui_prefs||{};
+    managerExecutionOptions={};
+    if(prefs.manager_model_mode==="runtime")managerExecutionOptions.model="";
+    if(prefs.manager_model_mode==="explicit")managerExecutionOptions.model=prefs.manager_model||"";
+    if(prefs.manager_effort_mode==="default")managerExecutionOptions.effort="";
+    if(prefs.manager_effort_mode==="explicit")managerExecutionOptions.effort=prefs.manager_effort||"";
     $("#sw-assign").value=prefs.assign_mode||"auto";
     $("#sw-gate").value=prefs.gate_mode||"auto";
 
@@ -1515,7 +2144,7 @@ async function loadAgents(){
     automatic.value="";automatic.textContent="经理 · 自动";select.appendChild(automatic);
     for(const agent of S.agents){
       const option=document.createElement("option");
-      option.value=agent.name;option.disabled=!agent.installed;
+      option.value=agent.name;option.disabled=!agent.installed||agent.enabled===false;
       option.textContent="经理 · "+agent.name+(agent.installed?"":"（本机未安装）");
       option.title=agent.blurb||agent.detail||"";
       select.appendChild(option);
@@ -1523,7 +2152,14 @@ async function loadAgents(){
     select.value=prefs.manager_agent||"";
     select.title="谁来跟你讨论想法。独占：选定后不降级"+
       (S.agentPrecision?" · "+S.agentPrecision:"");
-    renderManagerWarning();
+    const family=$("#sw-manager-agent");family.replaceChildren(optionEl("","经理 · 自动"));
+    const groups=new Map(S.agents.map(a=>[agentChoiceKey(a),a.group||a.kind]));
+    for(const [kind,label] of groups){
+      const option=optionEl(kind,"经理 · "+label);
+      option.disabled=!S.agents.some(a=>agentChoiceKey(a)===kind&&a.installed&&a.enabled!==false);family.appendChild(option);
+    }
+    const selected=S.agents.find(a=>a.name===select.value);family.value=selected?agentChoiceKey(selected):"";
+    renderManagerOptions();renderManagerWarning();
   }catch(_){/* file:// 演示模式或服务未启动时保持默认值 */}
 }
 function renderManagerWarning(){
@@ -1536,6 +2172,9 @@ function renderManagerWarning(){
 }
 let prefsSave=Promise.resolve(true);
 function currentPrefs(){return {manager_agent:$("#sw-manager").value,
+  manager_model:managerExecutionOptions.model||"",manager_effort:managerExecutionOptions.effort||"",
+  manager_model_mode:!("model" in managerExecutionOptions)?"inherit":managerExecutionOptions.model===""?"runtime":"explicit",
+  manager_effort_mode:!("effort" in managerExecutionOptions)?"inherit":managerExecutionOptions.effort===""?"default":"explicit",
   assign_mode:$("#sw-assign").value,gate_mode:$("#sw-gate").value};}
 function savePrefs(){
   const snapshot=currentPrefs();
@@ -1552,6 +2191,7 @@ function savePrefs(){
   return prefsSave;
 }
 async function waitForPrefs(){
+  savePrefs(); // Capture custom input even when Enter is pressed before it loses focus.
   // `await prefsSave` captures one Promise.  A programmatic change (or an
   // already queued change event) can append a newer save while that Promise
   // is pending, so keep waiting until the observed tail is still the tail.
@@ -1567,8 +2207,16 @@ async function waitForPrefs(){
     return prefsOk;
   }
 }
-$("#sw-manager").onchange=()=>{renderManagerWarning();
-  savePrefs();};
+$("#sw-manager-agent").onchange=()=>{
+  const agent=preferredProfile(S.agents.filter(a=>a.installed&&a.enabled!==false),$("#sw-manager-agent").value,null);
+  $("#sw-manager").value=agent?agent.name:"";managerExecutionOptions={};
+  renderManagerOptions();renderManagerWarning();savePrefs();
+};
+$("#sw-manager").onchange=()=>{
+  const agent=S.agents.find(a=>a.name===$("#sw-manager").value);
+  $("#sw-manager-agent").value=agent?agentChoiceKey(agent):"";managerExecutionOptions={};
+  renderManagerOptions();renderManagerWarning();savePrefs();
+};
 $("#sw-assign").onchange=()=>savePrefs();
 $("#sw-gate").onchange=()=>{
   if($("#sw-gate").value==="ask")
@@ -1586,23 +2234,27 @@ function normalizeChoiceAnswers(value){
   return answers;
 }
 function freezeOpenChoices(reason){
-  for(const message of S.preChat)
+  const goal=S.mode==='live'?window.GoalQueue?.selected():null;
+  for(const message of goal?GoalQueue.chatMessages(goal):S.preChat)
     if(message.card&&message.card.kind==="choices"&&!message.card.frozen){
       message.card.frozen=true;
       if(reason)message.card.skipped=reason;
     }
 }
 function submitChoices(card){
-  if(S.sendPending){hint("上一条消息仍在发送，请稍候");return;}
+  if(draftLocked()){hint("上一条消息仍在发送，请稍候");return;}
   const lines=[];
   for(const question of card.questions){
     const answer=card.answers[question.id]||"";
-    const extra=card.answers["__other__"+question.id]||"";
+    const extra=(card.answers["__other__"+question.id]||"").trim();
     if(!answer&&!extra)continue;
     const options=question.options||[];
-    const chosen=options.find(option=>option.label===answer);
+    const selected=choiceSelections(answer,options);
+    if(options.length&&!selected.length)continue;
+    const chosen=options.find(option=>option.other&&selected.includes(option.label));
     if(chosen&&chosen.other&&!extra){hint("选择“其他”后请补充说明");return;}
-    const rendered=(chosen&&chosen.other)||!options.length?(extra||answer):answer;
+    const rendered=!options.length?answer.trim():selected.filter(label=>!options.some(option=>option.label===label&&option.other)).concat(chosen?[extra]:[]).join("；");
+    if(!rendered)continue;
     lines.push(question.question+"："+rendered);
   }
   if(!lines.length){hint("至少答一题，或者直接在输入框里说");return;}
@@ -1612,6 +2264,9 @@ function submitChoices(card){
   sendPrompt();
 }
 $("#prompt").addEventListener("input",autoGrow);
+$("#prompt").addEventListener("input",()=>window.GoalQueue?.inputChanged());
+// 运行中打出「@任务id 」的那一刻发送键就该亮起来，不等下一次重绘
+$("#prompt").addEventListener("input",()=>{$("#send").disabled=draftLocked()||runBlocksSend();});
 $("#prompt").addEventListener("keydown",e=>{
   // 中文等输入法组词时，回车是"确认候选词"而不是"发送"——isComposing 和
   // 老浏览器的 keyCode 229 都是这个状态，必须放行让输入法自己处理
@@ -1650,6 +2305,7 @@ async function discardActiveDraft(){
 // This used to be `$("#new-btn").onclick=()=>{`; discard is asynchronous, so the
 // handler must now await server confirmation before changing any local draft state.
 $("#new-btn").onclick=async()=>{
+  if(S.mode==='live'&&window.GoalQueue?.available){GoalQueue.newDraft();return;}
   if(S.sendPending){hint("上一条消息仍在发送，请稍候");return;}
   // 判据是「有没有服务端草稿」，不是「在哪个模式」：S.chatSession 会跟着模式
   // 切换活下来，带着 LIVE 草稿切到 DEMO 再点新目标，只看模式就会把服务端那份
@@ -1665,15 +2321,12 @@ $("#new-btn").onclick=async()=>{
   // renderChat() 会把这个当成"还没建会话、正在写"的状态显示欢迎页；
   // 一旦经理真正建了新计划，plan_created 会把新会话推到这个位置上。
   S.followLatest=true;S.activeIdx=S.sessions.length;
-  S.preChat=[];S.pendingGoal=null;S.chatSession=null;S.pendingChoiceAnswers=null;
-  S.drawer=null;S.preview=null;S.pvDiff=false;pvShown=null;$("#prompt").value="";autoGrow();$("#prompt").focus();renderAll();
+  S.preChat=[];S.pendingGoal=null;S.chatSession=null;S.pendingChoiceAnswers=null;S.unplannedCost=null;
+  S.drawer=null;S.preview=null;S.pvDiff=false;pvShown=null;closeReview();$("#prompt").value="";autoGrow();$("#prompt").focus();renderAll();
 };
 function setPromptText(text){
-  if(S.sendPending){hint("上一条消息仍在发送，请稍候");return;}
+  if(draftLocked()){hint("上一条消息仍在发送，请稍候");return;}
   const prompt=$("#prompt");prompt.value=text;autoGrow();prompt.focus();return true;
-}
-function sendText(t){
-  if(setPromptText(t))sendPrompt();
 }
 
 /* ---------- 经理思考进度（spec：见 CLAUDE.md §6.14） ----------
@@ -1691,6 +2344,7 @@ function renderManagerProgress(steps,startTs,live){
      的结束时刻 —— 这一步花了多久 = 它的 ts 减去上一步的 ts（第一步减去本轮
      开始时间）。用「下一步的 ts 减自己」是错的，那算的是下一步的时长。 */
   const box=document.createElement("div");box.className="mprog";
+  if(live){const label=document.createElement("strong");label.className="work-shimmer";label.textContent="经理思考中";box.append(label);}
   const row=(detail,secs,cur)=>{
     const r=document.createElement("div");r.className="st"+(cur?" cur":"");
     const ic=document.createElement("i");ic.setAttribute("data-lucide",mprogIcon(detail));
@@ -1779,6 +2433,7 @@ function historyToChat(history){
 function applyActiveSnapshot(active){
   if(!active||typeof active!=="object")return false;
   const sessionId=String(active.session_id||"");
+  if(window.GoalQueue?.records.has(sessionId))return false;
   if(!/^[a-f0-9]{12}$/.test(sessionId)){
     hint("会话恢复失败：会话编号无效");
     return false;
@@ -1811,7 +2466,7 @@ async function restoreManagerSessions(){
     }
     const data=await response.json();
     if(data.run&&/^[a-f0-9]{8}$/.test(String(data.run.run_id||""))){
-      S.managerChatsByRun[data.run.run_id]=historyToChat(data.run.history);
+      S.managerChatsByRun[data.run.run_id]=historyToChat(data.run.history).map(m=>({...m,restoredManager:true}));
     }
     if(data.active){
       if(applyActiveSnapshot(data.active)&&data.active.pending)startRestoredManagerPolling();
@@ -1823,7 +2478,7 @@ async function restoreManagerSessions(){
   }catch(_){
     hint("会话恢复失败：连不上 serve.py");
     /* boot continues; live polling will own the persistent disconnected state */
-  }finally{S.restoringSessions=false;}
+  }finally{S.restoringSessions=false;window.GoalQueue?.reconcileRestored();}
 }
 
 /* ---------- restored pending turn ---------- */
@@ -1855,7 +2510,7 @@ async function pollRestoredManagerTurn(){
     const data=await response.json();
     if(S.chatSession!==expectedSession)return;
     if(data.run&&/^[a-f0-9]{8}$/.test(String(data.run.run_id||"")))
-      S.managerChatsByRun[data.run.run_id]=historyToChat(data.run.history);
+      S.managerChatsByRun[data.run.run_id]=historyToChat(data.run.history).map(m=>({...m,restoredManager:true}));
     if(data.active){
       if(!applyActiveSnapshot(data.active)||!data.active.pending){
         stopRestoredManagerPolling();
@@ -1888,10 +2543,28 @@ window.addEventListener("pageshow",e=>{
   if(S.mode==="live")startLive();
   restoreManagerSessions().then(renderAll);});
 
+// 运行中任务的交互通道：LIVE 有运行在跑时只放行「@任务id 内容」追问。以前这里
+// 一律 return，排队 → AWAITING_INPUT 那整条后端能力从界面上到不了（bug B8）
+const FOLLOW_UP_RE=/^@(\S+)\s+([\s\S]+)$/;
+function runBlocksSend(){
+  const goal=S.mode==='live'?window.GoalQueue?.selected():null;
+  if(goal){
+    if(goal.draft||goal.state==='awaiting_input')return false;
+    return !goal.run_id||!FOLLOW_UP_RE.test($("#prompt").value.trim());
+  }
+  return S.busy&&S.mode==="live"&&!FOLLOW_UP_RE.test($("#prompt").value.trim());
+}
 async function sendPrompt(){
   const ta=$("#prompt"),text=ta.value.trim();
   const choiceAnswers=S.pendingChoiceAnswers;
-  if(!text||(S.busy&&S.mode==="live")||S.sendPending)return;
+  const goal=S.mode==='live'?window.GoalQueue?.selected():null;
+  if(goal){
+    if(!text||draftLocked()||runBlocksSend())return;
+    if(goal.run_id)return GoalQueue.followup(text);
+    return goal.draft?GoalQueue.submit(text):GoalQueue.reply(text,choiceAnswers);
+  }
+  if(!text||S.sendPending)return;
+  if(runBlocksSend()){hint("运行中只能用「@任务id 内容」追问；新目标等这次运行结束再发");return;}
   S.sendPending=true;renderAll();
   try{
   if(S.mode==="live"){
@@ -1906,24 +2579,33 @@ async function sendPrompt(){
     S.pendingGoal={text:text,ts:nowTs()};S.followLatest=true;renderAll();
     setTimeout(()=>demoRun(text),700);return;}
   // @taskid ... -> deep follow-up on that task's agent session
-  const m=text.match(/^@(\S+)\s+([\s\S]+)$/);
+  const m=text.match(FOLLOW_UP_RE);
   S.followLatest=true;
   freezeOpenChoices("你直接回复了");
-  S.preChat.push({role:"user",text:text,ts:nowTs()},{role:"manager",text:"__typing__",ts:nowTs()});
+  // 追问属于那次运行：记进最新会话的时间线（异步回复 task_message_replied 也记在
+  // 那里）。放进 preChat 的话它排在回复后面，还会被挪进下一次运行
+  const followSess=m&&!S.chatSession?S.sessions[S.sessions.length-1]:null;
+  const log=followSess?followSess.chat:S.preChat;
+  const typing={role:"manager",text:"__typing__",ts:nowTs()};
+  log.push({role:"user",text:text,ts:nowTs()},typing);
   renderAll();
-  const drop=()=>{S.preChat=S.preChat.filter(x=>x.text!=="__typing__");};
+  const drop=()=>{
+    if(followSess){const i=log.indexOf(typing);if(i>=0)log.splice(i,1);}
+    else S.preChat=S.preChat.filter(x=>x.text!=="__typing__");};
   try{
     let res,data;
     if(m){
       res=await fetch("/task/"+encodeURIComponent(m[1])+"/message",{method:"POST",
         headers:{"Content-Type":"application/json"},body:JSON.stringify({message:m[2]})});
       data=await res.json();drop();
+      if(data.cost_complete===false)log.push({role:"manager",text:"API 费用未知，显示金额仅含已知部分；本目标后续付费调用已停止。",ts:nowTs()});
       if(!res.ok){hint("追问失败："+((data&&data.error)||res.status));renderAll();return;}
       if(data.queued===true){
-        S.preChat.push({role:"manager",ts:nowTs(),
+        log.push({role:"manager",ts:nowTs(),
           text:"这条消息已排进队列——任务还在跑，agent 跑完这一轮会回复，届时会在这里看到。"});
       }else{
-        S.preChat.push({role:"manager",text:data.reply||data.output||"（无回复）",ts:nowTs()});
+        log.push({role:"manager",text:data.reply||data.output||"（无回复）",ts:nowTs()});
+        if(data.warning)log.push({role:"manager",text:data.warning,ts:nowTs()});
       }
       renderAll();return;
     }
@@ -1940,6 +2622,7 @@ async function sendPrompt(){
       body:chatBody});
     stopManagerProgress();
     data=await res.json();drop();
+    if(data.cost_complete===false)S.preChat.push({role:"manager",text:"API 费用未知，显示金额仅含已知部分；本目标后续付费调用已停止。",ts:nowTs()});
     if(!res.ok){hint("经理没接上："+((data&&data.error)||res.status));
       await restoreManagerSessions();
       // 服务端在落盘之前就拒了（忙/会话冲突）的话，这句话哪儿都不在了：
@@ -2091,13 +2774,17 @@ $("#strip-label").textContent=S.strip?"收起":"展开";
 syncTabs();sizeCanvas();loop();renderAll();icons();
 async function boot(){
   await restoreManagerSessions();
+  await window.GoalQueue?.init();
   renderAll();
   loadWorkdir();
   loadAgents();
   setMode("live");
+  reviewFromHash();
 }
 boot();
 setTimeout(()=>{sizeCanvas();icons();},400);
 </script>
+<script src="assets/connections.js"></script>
+<script src="assets/studio.js"></script>
 </body>
 </html>

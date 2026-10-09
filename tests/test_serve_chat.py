@@ -11,6 +11,7 @@ import threading
 import urllib.error
 import urllib.request
 from contextlib import contextmanager
+from types import SimpleNamespace
 from http.server import ThreadingHTTPServer
 
 # macOS system proxy (e.g. MacPacket) hijacks urllib's localhost requests
@@ -21,6 +22,11 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import serve
 from hub import manager
+
+def _stub_router(*args, **kwargs):
+    # Manager is mocked; only the runtime cache and refresh contract is needed.
+    return SimpleNamespace(routes={}, circuit_open=lambda: set(),
+                           all_agents=lambda: [], open_circuit=lambda name: None)
 
 
 @contextmanager
@@ -91,7 +97,7 @@ def test_chat_flow():
     original_router = serve.Router
     manager.manager_step = fake_step
     serve._spawn_main = lambda tail: spawned.append(tail) or 4242
-    serve.Router = lambda *a, **k: object()   # no real executors needed
+    serve.Router = _stub_router
     serve._sessions.clear()
 
     srv = ThreadingHTTPServer(("127.0.0.1", 0), serve.Handler)
@@ -202,7 +208,7 @@ def test_handle_chat_started_dash_leading_values_use_equals_form():
     original_current = serve._current
     manager.manager_step = fake_step
     serve.subprocess.Popen = _FakeProc
-    serve.Router = lambda *a, **k: object()
+    serve.Router = _stub_router
     serve._current = None
     serve._sessions.clear()
 
@@ -249,9 +255,45 @@ def test_chat_409_when_run_in_progress():
     print("PASS: test_chat_409_when_run_in_progress")
 
 
+@isolated_chat_state()
+def test_chat_with_emptied_manager_route_answers_502():
+    """Bug B1 (docs/decisions/gaps-2026-09-25.md): the settings page can empty
+    the manager route; the real Router then raises ValueError from
+    chain_for, which /chat did not catch -> handler exception -> connection
+    dropped with no HTTP response, shown as "can't reach serve.py"."""
+    import http.client
+    import tempfile
+    import yaml
+
+    with open(serve.MATRIX_BASE, encoding="utf-8") as f:
+        matrix = yaml.safe_load(f)
+    matrix["routes"]["manager"] = []
+    matrix_path = os.path.join(tempfile.mkdtemp(prefix="ah_b1_chat_"), "matrix.yaml")
+    with open(matrix_path, "w", encoding="utf-8") as f:
+        yaml.safe_dump(matrix, f, allow_unicode=True)
+
+    original_matrix = serve.MATRIX
+    serve.MATRIX = matrix_path
+    srv = ThreadingHTTPServer(("127.0.0.1", 0), serve.Handler)
+    port = srv.server_address[1]
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    try:
+        try:
+            code, r = _post(port, "/chat", {"session_id": None, "message": "hi"})
+        except (urllib.error.URLError, http.client.HTTPException, ConnectionError) as e:
+            raise AssertionError(f"connection dropped instead of an HTTP error: {e!r}")
+        assert code == 502, (code, r)
+        assert "no route" in r["error"], r
+    finally:
+        srv.shutdown()
+        serve.MATRIX = original_matrix
+    print("PASS: test_chat_with_emptied_manager_route_answers_502")
+
+
 if __name__ == "__main__":
     test_chat_flow()
     test_chat_409_when_run_in_progress()
+    test_chat_with_emptied_manager_route_answers_502()
     test_handle_run_dash_leading_goal_uses_equals_form()
     test_handle_chat_started_dash_leading_values_use_equals_form()
     print("\nAll serve /chat tests passed.")

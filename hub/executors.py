@@ -11,17 +11,20 @@ import contextlib
 import glob
 import json
 import os
+import re
 import signal
 import shutil
 import subprocess
 import sys
 import tempfile
+import yaml
 from dataclasses import dataclass
 from typing import Callable, Optional
 
 from openai import AsyncOpenAI
 
 from .models import Task
+from . import local_discovery
 
 
 # GUI 启动的进程（双击的 .app / 启动器）从 launchd 继承的 PATH 只有
@@ -48,30 +51,11 @@ _EXTRA_BIN_DIRS = (
 
 
 def _which(name: str) -> Optional[str]:
-    """shutil.which()，外加 GUI 进程看不见的那些目录。
-
-    AGENT_HUB_EXTRA_PATH（os.pathsep 分隔）排在内置目录表之前，让用户
-    补自己的安装位置而不用改代码 —— 跟 codebuddy 的 node_path/script_path
-    同一个 BYO 思路。找不到仍然返回 None，绝不编造路径。
-    """
-    hit = shutil.which(name)
-    if hit:
-        return hit
-    dirs = [d for d in (os.environ.get("AGENT_HUB_EXTRA_PATH") or "").split(os.pathsep) if d]
-    dirs += [os.path.expanduser(d) for d in _EXTRA_BIN_DIRS]
-    # 自己遍历，不用 shutil.which(path=...)：那需要临时改 os.environ["PATH"]
-    # 或多传一个关键字参数，前者在 ThreadingHTTPServer 下会跟别的线程抢
-    # PATH，后者会打破既有测试对 shutil.which 的单参数打桩契约。
-    # Windows 上 _EXTRA_BIN_DIRS 全是 POSIX 路径、一个都不存在，所以这个
-    # 循环什么也找不到、行为与改动前一致 —— 如实记录，不假装跨平台。
-    for d in dirs:
-        cand = os.path.join(d, name)
-        if os.path.isfile(cand) and os.access(cand, os.X_OK):
-            return cand
-    return None
+    """Shared read-only lookup, including Windows GUI installation roots."""
+    return local_discovery.which(name, extra_dirs=_EXTRA_BIN_DIRS)
 
 
-def _claude_cmd() -> list[str]:
+def _claude_cmd(claude_path: Optional[str] = None) -> list[str]:
     """Return argv prefix to invoke the claude CLI.
 
     解析顺序跟 dsh/codex 对齐：CLAUDE_PATH 环境变量 > _which()（PATH +
@@ -81,7 +65,7 @@ def _claude_cmd() -> list[str]:
     On Windows, `claude` in PATH is a .cmd shim that cannot be directly
     exec'd; resolve to the real .exe inside node_modules.
     """
-    which = os.environ.get("CLAUDE_PATH") or _which("claude")
+    which = claude_path or os.environ.get("CLAUDE_PATH") or _which("claude")
     if which is None:
         return ["claude"]
     if sys.platform == "win32" and which.lower().endswith(".cmd"):
@@ -103,9 +87,9 @@ def _resolve_codebuddy_paths(node_path: Optional[str],
     or passed in directly) > WORKBUDDY_NODE_PATH/WORKBUDDY_SCRIPT_PATH env
     vars > best-effort auto-detect of the default install location.
 
-    Auto-detect is confirmed accurate for macOS only (this is the only
-    platform it's been tested on); on other platforms it returns whatever
-    was passed in/from the env, which may be None. Deliberately called
+    Windows discovery also checks registered WorkBuddy installations and
+    its per-user Node runtime. Explicit paths retain their legacy contract.
+    Deliberately called
     lazily at .run() time, not at construction -- mirrors _claude_cmd()'s
     laziness, and keeps build_executor()/Router() construction free of
     filesystem assumptions (some callers construct a real, non-mocked
@@ -114,6 +98,10 @@ def _resolve_codebuddy_paths(node_path: Optional[str],
     """
     node_path = node_path or os.environ.get("WORKBUDDY_NODE_PATH")
     script_path = script_path or os.environ.get("WORKBUDDY_SCRIPT_PATH")
+    if sys.platform == 'win32' and not (node_path and script_path):
+        found = local_discovery.discover_local('codebuddy',
+                    {k: v for k, v in {'node': node_path, 'script': script_path}.items() if v})
+        return tuple(found['argv']) if found['status'] == 'found' else (None, None)
     if sys.platform == "darwin":
         if not script_path:
             candidate = ("/Applications/WorkBuddy.app/Contents/Resources/"
@@ -138,12 +126,32 @@ def _dsh_cmd(dsh_path: Optional[str]) -> list[str]:
     which = dsh_path or os.environ.get("DSH_PATH") or _which("dsh")
     if which is None:
         return []
-    if sys.platform == "win32" and which.lower().endswith(".cmd"):
-        # npm's dsh shim can't be exec'd directly on Windows; mirror
-        # _claude_cmd's cmd /c fallback (untested -- see the claude.exe note
-        # in CLAUDE.md §3 for the same shim lesson).
-        return ["cmd", "/c", which]
+    if sys.platform == "win32" and which.lower().endswith((".cmd", ".bat")):
+        # A .cmd/.bat only runs through cmd.exe, which re-parses dsh's prompt
+        # argument: a `"` plus `&` in a goal or an upstream agent's output
+        # would run commands (BatBadBut). Run npm's target with node instead.
+        return _npm_shim_argv(which)
     return [which]
+
+
+def _npm_shim_argv(shim: str) -> list[str]:
+    """`[node, script]` from npm's cmd-shim for a node CLI: it sets _prog to
+    the node.exe beside the shim, else node on PATH, then runs
+    `"%_prog%" "%dp0%\\<script>" %*` (the script may have no extension).
+    [] for any other shape: refuse, never cmd /c."""
+    try:
+        with open(shim, encoding="utf-8", errors="replace") as f:
+            text = f.read()
+    except OSError:
+        return []
+    m = re.search(r'"%_prog%"\s+"%dp0%\\([^"]+)"', text)
+    if not m or 'SET "_prog=node"' not in text:
+        return []
+    base = os.path.dirname(shim)
+    script = os.path.join(base, m.group(1))
+    node = os.path.join(base, "node.exe")
+    node = node if os.path.isfile(node) else _which("node")
+    return [node, script] if node and os.path.isfile(script) else []
 
 
 def _codex_cmd(codex_path: Optional[str]) -> list[str]:
@@ -173,18 +181,16 @@ def _codex_cmd(codex_path: Optional[str]) -> list[str]:
     return [which]
 
 
-def _dsh_model_patch_text(provider: str, model: str) -> str:
+def _dsh_model_patch_text(provider: str, model: str, effort: str = '') -> str:
     """A `--patch` overlay for dsh: a top-level YAML ARRAY of loader patch
     entries (NOT a mapping) -- verified against `dsh --dump-config`
     2026-08-15. Each entry targets a plugin by id and REPLACES its config
     wholesale, so `provider` must be supplied too (agent-default-model's
     default config is `{provider, model}`; omitting provider would drop it)."""
-    return (
-        "- id: agent-default-model\n"
-        "  config:\n"
-        f"    provider: {provider}\n"
-        f"    model: {model}\n"
-    )
+    config = {'provider': provider, 'model': model}
+    if effort:
+        config['reasoningEffort'] = effort
+    return yaml.safe_dump([{'id': 'agent-default-model', 'config': config}], sort_keys=False)
 
 
 def _dsh_unavailable(text: str) -> bool:
@@ -277,6 +283,32 @@ class MockExecutor(Executor):
         return ExecResult(ok=True, output=f"[mock output for '{task.title}']", cost_usd=0.0)
 
 
+async def _kill_timed_out(proc) -> None:
+    """wait_for(proc.communicate()) timing out only stops the WAITING: the
+    CLI keeps running (and editing the workdir) while the engine retries the
+    same agent, so two copies end up working one task. Kill and reap it,
+    the same way the streaming paths already do."""
+    if proc is None or proc.returncode is not None:
+        return
+    with contextlib.suppress(ProcessLookupError):
+        proc.kill()
+    with contextlib.suppress(Exception):
+        await asyncio.wait_for(proc.wait(), timeout=5)
+
+
+def _spawn_not_found(exc: FileNotFoundError, not_found: str) -> ExecResult:
+    """WinError 206 is a command line past Windows' 32,767-char cap, raised by
+    Python as FileNotFoundError. For executors whose prompt rides in argv
+    that means THIS prompt is too long -- not the CLI missing, which would
+    circuit-break the agent for the whole run."""
+    if getattr(exc, "winerror", None) == 206:
+        return ExecResult(ok=False, error=(
+            "prompt too long for the Windows command line (limit 32,767 chars); "
+            "this agent takes its prompt as a command-line argument"),
+            error_kind="task_error")
+    return ExecResult(ok=False, error=not_found, error_kind="unavailable")
+
+
 class ClaudeCodeExecutor(Executor):
     """Runs `claude -p` headless. Requires Claude Code installed & logged in.
 
@@ -294,12 +326,21 @@ class ClaudeCodeExecutor(Executor):
     name = "claude_code"
 
     def __init__(self, model: str = "sonnet", allowed_tools: str = "Read",
-                 workdir: str = ".", timeout: int = 600, stream: bool = True):
+                 workdir: str = ".", timeout: int = 600, stream: bool = True,
+                 reasoning_effort: str = '', claude_path: Optional[str] = None):
         self.model = model
+        self.claude_path = claude_path
+        self.reasoning_effort = reasoning_effort
         self.allowed_tools = allowed_tools
         self.workdir = workdir
         self.timeout = timeout
         self.stream = stream
+
+    def _selection_args(self) -> list[str]:
+        args = ['--model', self.model] if self.model else []
+        if self.reasoning_effort:
+            args.extend(['--effort', self.reasoning_effort])
+        return args
 
     async def run(self, task: Task, context: str,
                    on_event: Optional[Callable[[str], None]] = None) -> ExecResult:
@@ -309,13 +350,13 @@ class ClaudeCodeExecutor(Executor):
 
     async def _run_blocking(self, task: Task, context: str) -> ExecResult:
         prompt = task.prompt if not context else f"{task.prompt}\n\n<context>\n{context}\n</context>"
-        cmd = _claude_cmd() + [
-            "-p", prompt,
-            "--model", self.model,
+        cmd = (_claude_cmd(self.claude_path) if self.claude_path else _claude_cmd()) + [
+            "-p",
+            *self._selection_args(),
             "--output-format", "json",
             "--allowedTools", self.allowed_tools,
         ]
-        return await self._exec_json_cmd(cmd)
+        return await self._exec_json_cmd(cmd, prompt)
 
     async def run_resumed(self, message: str, session_id: str) -> ExecResult:
         """One follow-up turn in an existing conversation, via `claude -p
@@ -325,27 +366,32 @@ class ClaudeCodeExecutor(Executor):
         as-is, NOT wrapped in the usual <context> block -- the resumed
         session already carries the original task's context.
         """
-        cmd = _claude_cmd() + [
-            "-p", message,
-            "--model", self.model,
+        cmd = (_claude_cmd(self.claude_path) if self.claude_path else _claude_cmd()) + [
+            "-p",
+            *self._selection_args(),
             "--output-format", "json",
             "--allowedTools", self.allowed_tools,
             "--resume", session_id,
         ]
-        return await self._exec_json_cmd(cmd)
+        return await self._exec_json_cmd(cmd, message)
 
-    async def _exec_json_cmd(self, cmd: list[str]) -> ExecResult:
+    async def _exec_json_cmd(self, cmd: list[str], prompt: str) -> ExecResult:
         """Run `cmd` (a full `claude -p ... --output-format json` argv,
         built by the caller) and classify the result. Shared by
         _run_blocking and run_resumed so the subprocess/timeout/parse
-        handling is defined exactly once."""
+        handling is defined exactly once. The prompt goes through stdin,
+        never argv: Windows caps a command line at 32,767 chars, and a
+        cmd.exe shim would parse whatever is in it."""
+        proc = None
         try:
             proc = await asyncio.create_subprocess_exec(
-                *cmd, cwd=self.workdir,
+                *cmd, cwd=self.workdir, stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
             )
-            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=self.timeout)
+            stdout, stderr = await asyncio.wait_for(
+                proc.communicate(prompt.encode("utf-8")), timeout=self.timeout)
         except asyncio.TimeoutError:
+            await _kill_timed_out(proc)
             return ExecResult(ok=False, error=f"claude -p timed out after {self.timeout}s",
                               error_kind="transient")
         except FileNotFoundError:
@@ -366,9 +412,9 @@ class ClaudeCodeExecutor(Executor):
     async def _run_streaming(self, task: Task, context: str,
                               on_event: Optional[Callable[[str], None]]) -> ExecResult:
         prompt = task.prompt if not context else f"{task.prompt}\n\n<context>\n{context}\n</context>"
-        cmd = _claude_cmd() + [
-            "-p", prompt,
-            "--model", self.model,
+        cmd = (_claude_cmd(self.claude_path) if self.claude_path else _claude_cmd()) + [
+            "-p",                   # prompt via stdin, see _exec_json_cmd
+            *self._selection_args(),
             "--output-format", "stream-json",
             "--verbose",
             "--include-partial-messages",
@@ -376,7 +422,7 @@ class ClaudeCodeExecutor(Executor):
         ]
         try:
             proc = await asyncio.create_subprocess_exec(
-                *cmd, cwd=self.workdir,
+                *cmd, cwd=self.workdir, stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
                 limit=10 * 1024 * 1024,
             )
@@ -388,7 +434,9 @@ class ClaudeCodeExecutor(Executor):
         # otherwise a child that fills the stderr pipe buffer while we're
         # still blocked reading stdout deadlocks (communicate() does this
         # for free in _run_blocking; the manual loop here has to do it itself).
+        # Same reason the prompt is fed from its own task.
         stderr_task = asyncio.create_task(proc.stderr.read())
+        feed_task = asyncio.create_task(_feed_prompt(proc, prompt))
 
         last_result: Optional[dict] = None
         try:
@@ -401,6 +449,7 @@ class ClaudeCodeExecutor(Executor):
                     last_result = obj
         except asyncio.TimeoutError:
             stderr_task.cancel()
+            feed_task.cancel()
             proc.kill()
             await proc.wait()
             return ExecResult(ok=False, error=f"claude -p timed out after {self.timeout}s",
@@ -410,6 +459,7 @@ class ClaudeCodeExecutor(Executor):
             # actually fire, but a single NDJSON line over the StreamReader
             # buffer must still degrade gracefully rather than crash the task.
             stderr_task.cancel()
+            feed_task.cancel()
             proc.kill()
             await proc.wait()
             return ExecResult(ok=False,
@@ -417,6 +467,7 @@ class ClaudeCodeExecutor(Executor):
                               error_kind="task_error")
 
         await proc.wait()
+        await feed_task
         stderr = (await stderr_task).decode(errors="replace")
         if last_result is not None:
             return _claude_result_from_dict(last_result)
@@ -716,7 +767,7 @@ async def _read_bounded_tail(reader, max_bytes: int = 64 * 1024) -> bytes:
     return bytes(tail)
 
 
-async def _feed_codex_prompt(proc, prompt: str) -> None:
+async def _feed_prompt(proc, prompt: str) -> None:
     """Send the dynamic prompt through stdin and close it deterministically."""
     try:
         proc.stdin.write(prompt.encode("utf-8"))
@@ -743,8 +794,9 @@ class CodexExecutor(Executor):
     name = "codex"
 
     def __init__(self, model: str = "", workdir: str = ".", timeout: int = 900,
-                 codex_path: Optional[str] = None):
+                 codex_path: Optional[str] = None, reasoning_effort: str = ''):
         self.model = model
+        self.reasoning_effort = reasoning_effort
         self.workdir = workdir
         self.timeout = timeout
         self.codex_path = codex_path
@@ -760,6 +812,8 @@ class CodexExecutor(Executor):
         ]
         if self.model:
             argv.extend(["--model", self.model])
+        if self.reasoning_effort:
+            argv.extend(['-c', 'model_reasoning_effort=' + json.dumps(self.reasoning_effort)])
         # `-` is Codex's documented stdin prompt. Keeping user/upstream text
         # out of argv prevents option confusion, command-shell parsing on
         # Windows, and platform command-line length limits.
@@ -818,7 +872,7 @@ class CodexExecutor(Executor):
         stderr_task = asyncio.create_task(_read_bounded_tail(proc.stderr))
         work = asyncio.gather(
             self._consume_jsonl(proc, on_event),
-            _feed_codex_prompt(proc, prompt),
+            _feed_prompt(proc, prompt),
         )
         try:
             state, _ = await asyncio.wait_for(work, timeout=self.timeout)
@@ -1096,6 +1150,7 @@ class CodeBuddyExecutor(Executor):
             "--output-format", "json",
             "--tools", "",
         ]
+        proc = None
         try:
             proc = await asyncio.create_subprocess_exec(
                 *cmd, cwd=self.workdir,
@@ -1103,13 +1158,12 @@ class CodeBuddyExecutor(Executor):
             )
             stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=self.timeout)
         except asyncio.TimeoutError:
+            await _kill_timed_out(proc)
             return ExecResult(ok=False, error=f"codebuddy timed out after {self.timeout}s",
                               error_kind="transient")
-        except FileNotFoundError:
-            return ExecResult(ok=False,
-                              error=f"codebuddy CLI not found at {script_path} "
-                                    f"(node: {node_path}) -- check capability_matrix.yaml",
-                              error_kind="unavailable")
+        except FileNotFoundError as exc:
+            return _spawn_not_found(exc, f"codebuddy CLI not found at {script_path} "
+                                         f"(node: {node_path}) -- check capability_matrix.yaml")
 
         raw = stdout.decode("utf-8", errors="replace").strip()
         if proc.returncode != 0:
@@ -1147,11 +1201,9 @@ class CodeBuddyExecutor(Executor):
                 stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
                 limit=10 * 1024 * 1024,
             )
-        except FileNotFoundError:
-            return ExecResult(ok=False,
-                              error=f"codebuddy CLI not found at {script_path} "
-                                    f"(node: {node_path}) -- check capability_matrix.yaml",
-                              error_kind="unavailable")
+        except FileNotFoundError as exc:
+            return _spawn_not_found(exc, f"codebuddy CLI not found at {script_path} "
+                                         f"(node: {node_path}) -- check capability_matrix.yaml")
 
         # Drain stderr concurrently with the stdout readline loop below --
         # otherwise a child that fills the stderr pipe buffer while we're
@@ -1332,8 +1384,9 @@ class DshExecutor(Executor):
     def __init__(self, model: str = "deepseek-v4-flash",
                  provider: str = "deepseek-official",
                  workdir: str = ".", timeout: int = 900,
-                 dsh_path: Optional[str] = None):
+                 dsh_path: Optional[str] = None, reasoning_effort: str = ''):
         self.model = model
+        self.reasoning_effort = reasoning_effort
         self.provider = provider
         self.workdir = workdir
         self.timeout = timeout
@@ -1349,9 +1402,10 @@ class DshExecutor(Executor):
                 error_kind="unavailable")
         prompt = task.prompt if not context else f"{task.prompt}\n\n<context>\n{context}\n</context>"
         patch_path: Optional[str] = None
+        proc = None
         try:
             with tempfile.NamedTemporaryFile("w", suffix=".yml", delete=False) as f:
-                f.write(_dsh_model_patch_text(self.provider, self.model))
+                f.write(_dsh_model_patch_text(self.provider, self.model, self.reasoning_effort))
                 patch_path = f.name
             argv = cmd + ["--profile", "headless", "--patch", patch_path, prompt]
             proc = await asyncio.create_subprocess_exec(
@@ -1360,10 +1414,11 @@ class DshExecutor(Executor):
             )
             stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=self.timeout)
         except asyncio.TimeoutError:
+            await _kill_timed_out(proc)
             return ExecResult(ok=False, error=f"dsh timed out after {self.timeout}s",
                               error_kind="transient")
-        except FileNotFoundError:
-            return ExecResult(ok=False, error="`dsh` CLI not found", error_kind="unavailable")
+        except FileNotFoundError as exc:
+            return _spawn_not_found(exc, "`dsh` CLI not found")
         finally:
             if patch_path is not None and os.path.exists(patch_path):
                 os.remove(patch_path)
@@ -1379,22 +1434,30 @@ class DshExecutor(Executor):
         return ExecResult(ok=True, output=raw)
 
 
-def build_executor(spec: dict, workdir: str, stream: bool = True) -> Executor:
+def build_executor(spec: dict, workdir: str, stream: bool = True, *, api_secret_provider=None) -> Executor:
     kind = spec["kind"]
     if kind == "mock":
         return MockExecutor()
+    if kind == 'api':
+        from .api_executor import ApiExecutor
+        connection = dict(spec.get('connection', {}))
+        connection['model'] = spec.get('model', connection.get('model', ''))
+        return ApiExecutor(connection, api_secret_provider, stream=stream)
     if kind == "claude_code":
         return ClaudeCodeExecutor(
             model=spec.get("model", "sonnet"),
             allowed_tools=spec.get("allowed_tools", "Read"),
             workdir=workdir,
             stream=stream,
+            reasoning_effort=str(spec.get('reasoning_effort') or ''),
+            claude_path=spec.get('claude_path'),
         )
     if kind == "codex":
         return CodexExecutor(
             model=str(spec.get("model") or ""),
             workdir=workdir,
             codex_path=spec.get("codex_path"),
+            reasoning_effort=str(spec.get('reasoning_effort') or ''),
         )
     if kind == "codebuddy":
         return CodeBuddyExecutor(
@@ -1415,5 +1478,6 @@ def build_executor(spec: dict, workdir: str, stream: bool = True) -> Executor:
             provider=spec.get("provider", "deepseek-official"),
             workdir=workdir,
             dsh_path=spec.get("dsh_path"),
+            reasoning_effort=str(spec.get('reasoning_effort') or ''),
         )
     raise ValueError(f"unknown executor kind: {kind}")

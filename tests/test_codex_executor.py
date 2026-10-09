@@ -13,6 +13,7 @@ import sys
 import tempfile
 import time
 import types
+from unittest.mock import patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -74,6 +75,24 @@ def _task(prompt: str = "do work") -> Task:
     return Task(id="t1", title="x", type=TaskType.CODING, prompt=prompt)
 
 
+def _run_fake(coro):
+    class FakeJob:
+        def __init__(self, proc):
+            assert isinstance(proc, _FakeProc)
+            self.proc = proc
+
+        def terminate(self):
+            if self.proc.returncode is None:
+                self.proc.terminate()
+            return True
+
+        def close(self):
+            pass
+
+    with patch.object(executors, '_create_windows_kill_job', FakeJob):
+        return asyncio.run(coro)
+
+
 def _run_with(lines, *, stderr=b"", returncode=0, on_event=None, context=""):
     captured = {}
     original = asyncio.create_subprocess_exec
@@ -88,7 +107,7 @@ def _run_with(lines, *, stderr=b"", returncode=0, on_event=None, context=""):
     asyncio.create_subprocess_exec = fake_exec
     try:
         ex = executors.CodexExecutor(codex_path="/bin/codex", workdir="/workspace")
-        result = asyncio.run(ex.run(_task(), context, on_event=on_event))
+        result = _run_fake(ex.run(_task(), context, on_event=on_event))
     finally:
         asyncio.create_subprocess_exec = original
     return result, captured
@@ -146,7 +165,10 @@ def test_jsonl_progress_output_and_raw_usage():
     assert any("git status" in p for p in progress)
     assert any("hub/a.py" in p for p in progress)
     assert captured["kwargs"]["cwd"] == "/workspace"
-    assert captured["kwargs"].get("start_new_session") is True
+    if os.name == 'nt':
+        assert captured['kwargs']['creationflags'] == executors.subprocess.CREATE_NEW_PROCESS_GROUP
+    else:
+        assert captured["kwargs"].get("start_new_session") is True
     assert captured["argv"][-1] == "-"
     sent = bytes(captured["proc"].stdin.data).decode()
     assert "<context>\nupstream result\n</context>" in sent
@@ -233,7 +255,7 @@ def test_preflight_forces_read_only_sandbox():
     asyncio.create_subprocess_exec = fake_exec
     try:
         ex = executors.CodexExecutor(codex_path="/bin/codex")
-        result = asyncio.run(ex.run_preflight(_task("reply ok"), ""))
+        result = _run_fake(ex.run_preflight(_task("reply ok"), ""))
     finally:
         asyncio.create_subprocess_exec = original
     assert result.ok
@@ -261,7 +283,7 @@ def test_spawn_strips_api_credentials_from_codex_environment():
 
     asyncio.create_subprocess_exec = fake_exec
     try:
-        result = asyncio.run(executors.CodexExecutor(
+        result = _run_fake(executors.CodexExecutor(
             codex_path="/bin/codex").run(_task(), ""))
     finally:
         asyncio.create_subprocess_exec = original_exec
@@ -391,7 +413,7 @@ def test_progress_callback_exception_cleans_up_running_process():
 
     asyncio.create_subprocess_exec = fake_exec
     try:
-        result = asyncio.run(executors.CodexExecutor(
+        result = _run_fake(executors.CodexExecutor(
             codex_path="/bin/codex").run(_task(), "", broken_callback))
     finally:
         asyncio.create_subprocess_exec = original

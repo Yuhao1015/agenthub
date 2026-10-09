@@ -29,6 +29,8 @@ import hub.executors as E
 
 def _fake_bin(dirpath: str, name: str) -> str:
     """造一个可执行的假 CLI。"""
+    if sys.platform == 'win32' and not name.endswith('.exe'):
+        name += '.exe'
     os.makedirs(dirpath, exist_ok=True)
     p = os.path.join(dirpath, name)
     with open(p, "w", encoding="utf-8") as f:
@@ -66,7 +68,8 @@ def test_which_delegates_when_path_already_has_it():
     try:
         real = _fake_bin(tmp, "ah-probe-cli")
         with _Env(PATH=tmp, AGENT_HUB_EXTRA_PATH=None):
-            assert E._which("ah-probe-cli") == real
+            found = E._which("ah-probe-cli")
+            assert found and os.path.normcase(found) == os.path.normcase(real), (found, real)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 

@@ -49,7 +49,7 @@ def _script_subprocess(responses: list[dict]):
         class _Proc:
             returncode = 0
 
-            async def communicate(self_inner):
+            async def communicate(self_inner, input=None):
                 return json.dumps(data).encode("utf-8"), b""
         return _Proc()
 

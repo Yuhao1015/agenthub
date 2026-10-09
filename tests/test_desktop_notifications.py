@@ -123,11 +123,14 @@ def test_send_prompt_asks_permission():
     src = _src()
     body = _extract_func(src, "sendPrompt")
     _assert_in(body, "ensureNotifyPermission()", "sendPrompt")
-    gate = "if(!text||(S.busy&&S.mode===\"live\")||S.sendPending)return;"
-    assert gate in body, "sendPrompt early-return gate must still exist"
-    assert body.index("ensureNotifyPermission()") > body.index(gate), \
-        "permission request must come AFTER the early-return gate " \
-        "(user gesture, not pollLive's setInterval callback)"
+    # two early-return gates since bug B8: nothing to send / already sending,
+    # and "a run is busy and this is not an @task follow-up"
+    gates = ("if(!text||S.sendPending)return;", "if(runBlocksSend())")
+    for gate in gates:
+        assert gate in body, f"sendPrompt early-return gate must still exist: {gate}"
+        assert body.index("ensureNotifyPermission()") > body.index(gate), \
+            "permission request must come AFTER the early-return gates " \
+            "(user gesture, not pollLive's setInterval callback)"
 
 
 def test_ingest_notifies_on_every_terminal_outcome_and_no_more():

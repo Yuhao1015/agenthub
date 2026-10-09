@@ -15,15 +15,27 @@ import urllib.error
 import urllib.request
 from contextlib import contextmanager
 from http.server import ThreadingHTTPServer
+from unittest import SkipTest
+from types import SimpleNamespace
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
 import serve
+from test_gate_serve import authorize_local_agents
 
 # macOS 的系统代理会劫持 localhost，urllib 必须显式关掉代理
 # （CLAUDE.md 记过这个坑；用 http.client 的测试天然不受影响）
 OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
+
+def _symlink(target, link):
+    try:
+        os.symlink(target, link, target_is_directory=os.path.isdir(target))
+    except OSError as exc:
+        if os.name == 'nt' and getattr(exc, 'winerror', None) == 1314:
+            raise SkipTest('Windows account lacks symbolic-link privilege') from exc
+        raise
 
 
 def _get(port: int, path: str):
@@ -83,6 +95,7 @@ def isolated_desktop():
         serve._active_sid = ""
         serve._chat_inflight.clear()
         serve._configure(td, "persist-test", 8787)
+        authorize_local_agents()
         try:
             yield td
         finally:
@@ -108,7 +121,8 @@ def test_session_round_trip_excludes_router_and_is_private():
             raw = json.load(f)
         assert "router" not in raw
         assert raw["history"][0]["text"] == "hello"
-        assert stat.S_IMODE(os.stat(path).st_mode) == 0o600
+        if os.name != 'nt':  # POSIX mode bits do not represent Windows ACLs.
+            assert stat.S_IMODE(os.stat(path).st_mode) == 0o600
         loaded = serve._session_load_disk("a1b2c3d4e5f6")
         assert loaded["session_id"] == "a1b2c3d4e5f6"
         assert "router" not in loaded
@@ -402,7 +416,7 @@ def test_current_rejects_symlinked_run_directory_escape():
         os.makedirs(outside_dir)
         outside_archive = os.path.join(outside_dir, "manager-session.json")
         _write_started_archive(outside_archive, run_id, "OUTSIDE_SECRET")
-        os.symlink(outside_dir, os.path.join(serve.RUNS_DIR, run_id))
+        _symlink(outside_dir, os.path.join(serve.RUNS_DIR, run_id))
         serve._run_meta = {"id": run_id}
 
         with running_server() as port:
@@ -418,7 +432,7 @@ def test_current_rejects_symlinked_run_archive_escape():
         os.makedirs(run_dir)
         outside_archive = os.path.join(td, "outside-manager-session.json")
         _write_started_archive(outside_archive, run_id, "OUTSIDE_SECRET")
-        os.symlink(outside_archive, os.path.join(run_dir, "manager-session.json"))
+        _symlink(outside_archive, os.path.join(run_dir, "manager-session.json"))
         serve._run_meta = {"id": run_id}
 
         with running_server() as port:
@@ -695,7 +709,7 @@ def test_restart_continues_with_exact_disk_history_and_cost():
             return {"status": "ready", "goal": "G", "constraints": "C",
                     "_cost_usd": 0.5}
 
-        serve.Router = lambda *args, **kwargs: object()
+        serve.Router = lambda *args, **kwargs: SimpleNamespace(all_agents=lambda: [])
         serve.manager.manager_step = fake_step
         try:
             sid = "a1b2c3d4e5f6"
@@ -757,7 +771,7 @@ def test_orphan_session_resume_claims_active_pointer():
             return {"status": "asking", "question": "Q", "questions": [],
                     "_cost_usd": 0.0}
 
-        serve.Router = lambda *args, **kwargs: object()
+        serve.Router = lambda *args, **kwargs: SimpleNamespace(all_agents=lambda: [])
         serve.manager.manager_step = fake_step
         try:
             with running_server() as port:
@@ -806,7 +820,7 @@ def test_orphan_claim_preserves_file_when_newer_session_becomes_active():
                     "_cost_usd": 0.0}
 
         serve._session_load_disk = paused_load
-        serve.Router = lambda *args, **kwargs: object()
+        serve.Router = lambda *args, **kwargs: SimpleNamespace(all_agents=lambda: [])
         serve.manager.manager_step = fake_step
         try:
             with running_server() as port:
@@ -846,7 +860,7 @@ def test_user_turn_is_persisted_before_manager_call():
             return {"status": "asking", "question": "Q", "questions": [],
                     "_cost_usd": 0.0}
 
-        serve.Router = lambda *args, **kwargs: object()
+        serve.Router = lambda *args, **kwargs: SimpleNamespace(all_agents=lambda: [])
         serve.manager.manager_step = fake_step
         try:
             code, body = _post(
@@ -880,7 +894,7 @@ def test_choice_answers_are_persisted_on_previous_question():
             return {"status": "ready", "goal": "G", "constraints": "",
                     "_cost_usd": 0.0}
 
-        serve.Router = lambda *args, **kwargs: object()
+        serve.Router = lambda *args, **kwargs: SimpleNamespace(all_agents=lambda: [])
         serve.manager.manager_step = fake_step
         try:
             with running_server() as port:
@@ -915,7 +929,7 @@ def test_manager_failure_keeps_user_message_and_clears_pending():
         async def fail_step(*args, **kwargs):
             raise RuntimeError("offline")
 
-        serve.Router = lambda *args, **kwargs: object()
+        serve.Router = lambda *args, **kwargs: SimpleNamespace(all_agents=lambda: [])
         serve.manager.manager_step = fail_step
         try:
             with running_server() as port:
@@ -950,7 +964,7 @@ def test_storage_failure_before_manager_call_returns_json_500():
             return {"status": "asking", "question": "Q", "questions": [],
                     "_cost_usd": 0.0}
 
-        serve.Router = lambda *args, **kwargs: object()
+        serve.Router = lambda *args, **kwargs: SimpleNamespace(all_agents=lambda: [])
         serve.manager.manager_step = fake_step
         serve._session_save = fail_user_save
         try:
@@ -997,7 +1011,7 @@ def test_storage_failure_after_manager_call_rolls_cache_back_for_retry():
             return {"status": "asking", "question": "Q", "questions": [],
                     "_cost_usd": 0.25}
 
-        serve.Router = lambda *args, **kwargs: object()
+        serve.Router = lambda *args, **kwargs: SimpleNamespace(all_agents=lambda: [])
         serve.manager.manager_step = fake_step
         serve._session_save = fail_manager_save
         try:
@@ -1040,7 +1054,7 @@ def test_chat_returns_typed_json_errors_for_session_state():
             return {"status": "asking", "question": "Q", "questions": [],
                     "_cost_usd": 0.0}
 
-        serve.Router = lambda *args, **kwargs: object()
+        serve.Router = lambda *args, **kwargs: SimpleNamespace(all_agents=lambda: [])
         serve.manager.manager_step = fake_step
         try:
             with running_server() as port:
@@ -1092,7 +1106,7 @@ def test_pending_snapshot_stays_responsive_during_manager_work():
             return {"status": "asking", "question": "Q", "questions": [],
                     "_cost_usd": 0.0}
 
-        serve.Router = lambda *args, **kwargs: object()
+        serve.Router = lambda *args, **kwargs: SimpleNamespace(all_agents=lambda: [])
         serve.manager.manager_step = slow_step
         try:
             with running_server() as port:
@@ -1128,7 +1142,7 @@ def test_second_concurrent_turn_gets_409_without_calling_manager_twice():
             return {"status": "asking", "question": "Q", "questions": [],
                     "_cost_usd": 0.0}
 
-        serve.Router = lambda *args, **kwargs: object()
+        serve.Router = lambda *args, **kwargs: SimpleNamespace(all_agents=lambda: [])
         serve.manager.manager_step = slow_step
         try:
             with running_server() as port:
@@ -1292,7 +1306,8 @@ def test_started_session_moves_into_spawned_run_after_durable_archive():
             saved = json.load(f)
         assert saved["status"] == "started" and saved["run_id"] == run_id
         assert saved["history"][-1]["text"] == "收到，马上安排开工。"
-        assert stat.S_IMODE(os.stat(archive_path).st_mode) == 0o600
+        if os.name != 'nt':
+            assert stat.S_IMODE(os.stat(archive_path).st_mode) == 0o600
         assert serve._active_session_id() == ""
         assert not os.path.exists(serve._session_path(sid))
         assert sid not in serve._sessions
@@ -1462,7 +1477,7 @@ def test_archive_writer_rejects_symlink_escapes():
         sess = _started_session("a1b2c3d4e5f6", "deadbeef")
         outside_dir = os.path.join(td, "outside-run")
         os.makedirs(outside_dir)
-        os.symlink(outside_dir, os.path.join(serve.RUNS_DIR, "deadbeef"))
+        _symlink(outside_dir, os.path.join(serve.RUNS_DIR, "deadbeef"))
         try:
             serve._write_run_manager_archive(sess, "deadbeef")
         except serve.SessionDataError as exc:
@@ -1477,7 +1492,7 @@ def test_archive_writer_rejects_symlink_escapes():
         outside_archive = os.path.join(td, "outside-manager-session.json")
         with open(outside_archive, "w", encoding="utf-8") as f:
             f.write("evidence")
-        os.symlink(outside_archive,
+        _symlink(outside_archive,
                    os.path.join(run_dir, "manager-session.json"))
         try:
             serve._write_run_manager_archive(sess, "deadbeef")
@@ -1716,7 +1731,7 @@ def test_reconcile_preserves_symlinked_session_evidence():
         with open(outside_path, "w", encoding="utf-8") as f:
             json.dump(serve._session_disk_dict(outside), f)
         session_path = serve._session_path(sid)
-        os.symlink(outside_path, session_path)
+        _symlink(outside_path, session_path)
         serve._set_active_session(sid)
 
         serve._reconcile_manager_sessions(
@@ -1777,7 +1792,7 @@ def test_full_http_chain_survives_server_restart():
             return {"status": "ready", "goal": "财务报表",
                     "constraints": "财务团队使用", "_cost_usd": 0.2}
 
-        serve.Router = lambda *args, **kwargs: object()
+        serve.Router = lambda *args, **kwargs: SimpleNamespace(all_agents=lambda: [])
         serve.manager.manager_step = fake_step
         try:
             with running_server() as first_port:
@@ -1833,7 +1848,12 @@ def test_full_http_chain_survives_server_restart():
 
 
 if __name__ == "__main__":
+    skipped = 0
     for name in sorted(k for k in list(globals()) if k.startswith("test_")):
         print(f"== {name} ==")
-        globals()[name]()
-    print("\nAll manager-session persistence tests passed.")
+        try:
+            globals()[name]()
+        except SkipTest as exc:
+            skipped += 1
+            print(f'SKIP {name}: {exc}')
+    print(f"\nManager-session persistence tests passed; {skipped} environment skips.")

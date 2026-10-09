@@ -31,10 +31,10 @@ def test_calls_the_existing_endpoints():
         assert endpoint in src, f"dashboard 没有接 {endpoint}"
 
 
-def test_copy_says_next_run_not_immediately():
+def test_copy_says_only_later_submissions_use_default():
     src = _src()
-    assert "下次运行生效" in src or "下一次运行" in src, (
-        "工作区文案必须说明是下次运行才生效"
+    assert "后续提交的目标使用此工作区" in src and "已提交目标保留原工作区" in src, (
+        "工作区文案必须说明已经提交的目标保留原工作区"
     )
     match = re.search(r"立即生效[^\n]{0,40}工作区|工作区[^\n]{0,40}立即生效", src)
     assert match is None, (

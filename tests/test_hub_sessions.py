@@ -40,7 +40,7 @@ def test_session_id_is_validated_before_any_path_join():
             raise AssertionError(f"{bad!r} 应当被拒绝")
         except ValueError:
             pass
-    assert sessions.session_path("/tmp/x", "a1b2c3d4e5f6") == "/tmp/x/a1b2c3d4e5f6.json"
+    assert sessions.session_path("/tmp/x", "a1b2c3d4e5f6") == os.path.join("/tmp/x", "a1b2c3d4e5f6.json")
 
 
 def test_schema_is_strict_about_unknown_keys():
@@ -126,7 +126,8 @@ def test_round_trip_through_disk_keeps_every_field():
         sessions.write_snapshot(td, sess)
         back = sessions.load_disk(td, sess["session_id"])
         assert back == sessions.disk_dict(sess)
-        assert os.stat(sessions.session_path(td, sess["session_id"])).st_mode & 0o777 == 0o600
+        if os.name != 'nt':  # Windows st_mode does not describe its ACL.
+            assert os.stat(sessions.session_path(td, sess["session_id"])).st_mode & 0o777 == 0o600
 
 
 def test_unreadable_file_raises_typed_error_and_is_left_alone():

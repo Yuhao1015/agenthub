@@ -29,7 +29,8 @@ def _src() -> str:
 
 
 def _no_session_branch(src: str) -> str:
-    m = re.search(r"const sess=S\.sessions\[S\.sessions\.length-1\];\s*\n?\s*if\(!sess\)\{(.*?)\n    \}",
+    # currentRunSession()：最新会话属于别的运行时也算「这次运行还没有会话」
+    m = re.search(r"const sess=currentRunSession\(\);\s*\n?\s*if\(!sess\)\{(.*?)\n    \}",
                   src, re.S)
     assert m, "找不到无会话时的兜底分支（还是裸 return？）"
     return m.group(1)

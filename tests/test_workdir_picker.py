@@ -7,8 +7,8 @@ Key semantics under test:
 - POST /settings/workdir: absolute+existing+outside-DATA_DIR only; empty
   string resets to default and removes the config key; the in-process
   WORKDIR global updates immediately (next run picks it up, no restart).
-- POST /settings/pick-workdir: fixed osascript argv (no user input in the
-  command), darwin-only, cancel -> cancelled:true.
+- POST /settings/pick-workdir: fixed native Windows/macOS command (no user
+  input in the command), cancellation preserves settings.
 - POST /settings/reveal-workdir opens the CONFIGURED workdir only.
 
 No framework, plain asserts. Zero real LLM calls. The osascript/reveal
@@ -31,6 +31,10 @@ from http.server import ThreadingHTTPServer
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import serve
+try:
+    from hub.workdir_picker import pick_workdir
+except ImportError:
+    pick_workdir = None
 
 _GLOBALS = ("PORT", "MATRIX", "BOARD_PATH", "EVENTS_PATH", "WORKDIR", "DATA_DIR",
             "PROJECT", "RUNTIME_DIR", "RUNS_DIR", "INDEX_PATH", "CONFIG_PATH",
@@ -131,7 +135,7 @@ def test_save_workdir_endpoint_validates_and_applies():
         shutil.rmtree(outside, ignore_errors=True)
 
 
-def test_pick_workdir_darwin_only_fixed_command():
+def test_pick_workdir_platforms_fixed_command():
     s = _snap()
     tmp = tempfile.mkdtemp(prefix="ah_wk_pick_")
     try:
@@ -160,6 +164,30 @@ def test_pick_workdir_darwin_only_fixed_command():
                 argv, 1, stdout="", stderr="")
             code, data = _post(port, "/settings/pick-workdir", {})
             assert code == 200 and data == {"cancelled": True}, (code, data)
+
+            serve.sys.platform = 'win32'
+            calls = []
+            def windows_run(argv, **kwargs):
+                calls.append((argv, kwargs))
+                return subprocess.CompletedProcess(argv, 0,
+                    stdout=json.dumps({'path': r'C:\团队\Project A'}), stderr='')
+            serve.subprocess.run = windows_run
+            code, data = _post(port, '/settings/pick-workdir', {})
+            assert code == 200 and data == {'path': r'C:\团队\Project A'}, (code, data)
+            assert '-STA' in calls[0][0] and '-File' in calls[0][0]
+            assert calls[0][1]['timeout'] == 300 and calls[0][1]['shell'] is False
+            before = serve.WORKDIR
+            serve.subprocess.run = lambda argv, **kw: subprocess.CompletedProcess(
+                argv, 0, stdout='{"cancelled":true}', stderr='')
+            assert _post(port, '/settings/pick-workdir', {}) == (200, {'cancelled': True})
+            assert serve.WORKDIR == before
+            serve._workdir_picker_lock.acquire()
+            try: assert _post(port, '/settings/pick-workdir', {})[0] == 409
+            finally: serve._workdir_picker_lock.release()
+            def timeout(argv, **kwargs): raise subprocess.TimeoutExpired(argv, 300)
+            serve.subprocess.run = timeout
+            assert _post(port, '/settings/pick-workdir', {})[1]['cancelled'] is True
+            assert not serve._workdir_picker_lock.locked()
         finally:
             serve.sys.platform = orig_platform
             serve.subprocess.run = orig_run
@@ -169,6 +197,14 @@ def test_pick_workdir_darwin_only_fixed_command():
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+def test_windows_picker_failure_is_recoverable():
+    assert pick_workdir is not None, 'Windows picker helper missing'
+    def broken(argv, **kwargs): raise OSError('SECRET')
+    assert 'SECRET' not in json.dumps(pick_workdir('win32', run=broken))
+    for output in ('{broken', '{}', '{"path":123}', '{"path":"bad\\npath"}'):
+        result = pick_workdir('win32', run=lambda argv, **kw:
+            subprocess.CompletedProcess(argv, 0, stdout=output, stderr=''))
+        assert 'error' in result and 'path' not in result
 def test_reveal_workdir_opens_configured_path_only():
     s = _snap()
     tmp = tempfile.mkdtemp(prefix="ah_wk_reveal_")
@@ -182,7 +218,8 @@ def test_reveal_workdir_opens_configured_path_only():
             assert code == 200 and data == {"ok": True}, (code, data)
         finally:
             serve.subprocess.Popen = orig_popen
-        assert captured["argv"] == ["open", serve.WORKDIR], captured
+        opener = 'explorer' if sys.platform == 'win32' else 'open' if sys.platform == 'darwin' else 'xdg-open'
+        assert captured["argv"] == [opener, serve.WORKDIR], captured
     finally:
         srv.shutdown()
         _restore(s)

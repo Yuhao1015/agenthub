@@ -55,6 +55,13 @@ Namespace conventions:
     tasks/{id}/inbox_finish  set true by serve.py's finish:true field --
                              tells an AWAITING_INPUT loop to stop waiting
                              for more messages and finalize now
+    run/checkpoints/seg/{n}  one segment of this run's changes: the run itself,
+                             each /rerun, each follow-up whose agent can write
+                             (see hub/run_changes.py for the fields)
+    run/checkpoints/rollback/{m}  one rollback of this run, and its undo
+    tasks/{id}/checkpoints/{n}  this task's own before/after checkpoints in
+                             segment n (written with task_id=None: bookkeeping,
+                             not something the task said)
     notes/{seq}              opportunistic findings from any agent
     review/{id}/verdict      reviewer conclusions
 """
@@ -142,7 +149,8 @@ class Blackboard:
 
     def _persist(self, entry: dict) -> None:
         line = json.dumps(entry, ensure_ascii=False) + "\n"
-        with open(self.path, "a", encoding="utf-8") as f:
+        # Offsets are UTF-8 byte counts; suppress Windows LF -> CRLF expansion.
+        with open(self.path, "a", encoding="utf-8", newline="") as f:
             f.write(line)
         self._replayed_bytes += len(line.encode("utf-8"))
 

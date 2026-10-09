@@ -25,6 +25,7 @@ import tempfile
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import serve
+from test_gate_serve import authorize_local_agents
 
 _GLOBALS = ("PORT", "MATRIX", "BOARD_PATH", "EVENTS_PATH", "WORKDIR", "DATA_DIR",
             "PROJECT", "RUNTIME_DIR", "RUNS_DIR", "INDEX_PATH", "CONFIG_PATH",
@@ -57,6 +58,7 @@ def test_missing_main_py_is_named_precisely_not_a_generic_crash():
     tmp = tempfile.mkdtemp(prefix="ah_nomain_")
     try:
         serve._configure(tmp, "default", 8787)
+        authorize_local_agents()
         serve.MAIN_PATH = os.path.join(tmp, "definitely-not-here", "main.py")
         try:
             serve._spawn_main(["--goal=x"])
@@ -96,6 +98,7 @@ def test_normal_spawn_path_untouched():
     # subprocess.run()，而它内部用的就是 Popen —— 先 patch 会把它一起打坏
     # （tests/test_settings_and_watchdog.py 的 spawn-failure 用例有同样的注释）
     serve._configure(tmp, "default", 8787)
+    authorize_local_agents()
     orig = serve.subprocess.Popen
     serve.subprocess.Popen = lambda argv, **kw: (captured.setdefault("argv", argv),
                                                   FakeProc())[1]
@@ -122,6 +125,7 @@ def test_empty_goal_is_named_precisely_not_exit_code_2():
     tmp = tempfile.mkdtemp(prefix="ah_nogoal_")
     try:
         serve._configure(tmp, "default", 8787)
+        authorize_local_agents()
         before = list(serve._runs)
         try:
             serve._spawn_main(["--goal="])
@@ -143,6 +147,7 @@ def test_whitespace_only_goal_counts_as_empty():
     tmp = tempfile.mkdtemp(prefix="ah_wsgoal_")
     try:
         serve._configure(tmp, "default", 8787)
+        authorize_local_agents()
         try:
             serve._spawn_main(["--goal=   \n"])
             raise AssertionError("只有空白的目标同样会让 main.py exit 2")
@@ -169,6 +174,7 @@ def test_chat_confirm_on_an_empty_proposal_goal_reports_instead_of_crashing():
     tmp = tempfile.mkdtemp(prefix="ah_confirm_")
     try:
         serve._configure(tmp, "default", 8787)
+        authorize_local_agents()
         spawned = []
         orig = serve.subprocess.Popen
         serve.subprocess.Popen = lambda argv, **kw: spawned.append(argv)

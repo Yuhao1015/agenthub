@@ -20,6 +20,9 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import serve
 
+MODEL_PREF_DEFAULTS = {'manager_model':'', 'manager_effort':'',
+                       'manager_model_mode':'inherit', 'manager_effort_mode':'inherit'}
+
 
 _GLOBALS = ("PORT", "MATRIX", "BOARD_PATH", "EVENTS_PATH", "WORKDIR", "DATA_DIR",
             "PROJECT", "RUNTIME_DIR", "RUNS_DIR", "INDEX_PATH", "CONFIG_PATH",
@@ -77,7 +80,8 @@ def test_valid_prefs_round_trip():
             "manager_agent": "cc-kimi", "assign_mode": "manual", "gate_mode": "ask"}})
         assert code == 200, (code, data)
         assert serve._ui_prefs() == {"manager_agent": "cc-kimi",
-                                     "assign_mode": "manual", "gate_mode": "ask"}
+                                     "assign_mode": "manual", "gate_mode": "ask",
+                                     **MODEL_PREF_DEFAULTS}
         code, data = _get(port, "/settings")
         assert code == 200 and data["ui_prefs"]["gate_mode"] == "ask", data
     finally:
@@ -92,7 +96,7 @@ def test_defaults_when_never_set():
     try:
         serve._configure(tmp, "default", 8787)
         assert serve._ui_prefs() == {"manager_agent": "", "assign_mode": "auto",
-                                     "gate_mode": "auto"}
+                                     "gate_mode": "auto", **MODEL_PREF_DEFAULTS}
     finally:
         _restore(snapshot)
         shutil.rmtree(tmp, ignore_errors=True)

@@ -95,6 +95,7 @@ def test_probe_agents_zero_subprocess():
     assert by_id["dsh"]["available"] is True
     assert by_id["codebuddy"]["available"] is False
     assert by_id["codex"]["available"] is False
+    assert by_id["git"]["available"] is False and by_id["git"]["detail"], by_id["git"]
     for a in agents:
         for field in ("id", "label", "kind", "available", "detail"):
             assert field in a, f"{a} missing {field}"
@@ -117,11 +118,11 @@ def test_settings_endpoints_desktop_roundtrip():
         code, data = _get(port, "/settings")
         assert code == 200
         assert data["data_dir"] == tmp and data["budget"] == 2.0
-        assert len(data["agents"]) == 4 and data["runs"] == []
+        assert len(data["agents"]) == 5 and data["runs"] == []
         assert data["credentials"] == {"deepseek": False, "openrouter": False}
 
         code, data = _get(port, "/settings/agents")
-        assert code == 200 and len(data["agents"]) == 4
+        assert code == 200 and len(data["agents"]) == 5
 
         code, data = _post(port, "/settings/config", {"budget": 3.5})
         assert code == 200 and abs(data["budget"] - 3.5) < 1e-9
@@ -132,7 +133,11 @@ def test_settings_endpoints_desktop_roundtrip():
         code, data = _post(port, "/settings/credentials", {"deepseek": "sk-abc"})
         assert code == 200 and data["deepseek"] is True
         mode = os.stat(serve.CREDENTIALS_PATH).st_mode & 0o777
-        assert mode == 0o600, oct(mode)
+        if os.name == 'nt':
+            from hub.connection_store import verify_private
+            verify_private(serve.CREDENTIALS_PATH)
+        else:
+            assert mode == 0o600, oct(mode)
 
         code, data = _get(port, "/settings")
         assert abs(data["budget"] - 3.5) < 1e-9
@@ -231,6 +236,8 @@ def test_spawn_failure_records_crash_event():
             raise OSError("interpreter vanished")
 
     serve._configure(tmp, "default", 8787)   # before patching Popen (git probe)
+    from test_gate_serve import authorize_local_agents
+    authorize_local_agents()  # This test targets spawning after user consent.
     orig_popen = serve.subprocess.Popen
     serve.subprocess.Popen = Boom
     try:

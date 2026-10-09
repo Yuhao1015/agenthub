@@ -18,6 +18,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import yaml
 
 import serve
+from test_gate_serve import authorize_local_agents
 
 _GLOBALS = ("PORT", "MATRIX", "BOARD_PATH", "EVENTS_PATH", "WORKDIR", "DATA_DIR",
             "PROJECT", "RUNTIME_DIR", "RUNS_DIR", "INDEX_PATH", "CONFIG_PATH",
@@ -69,6 +70,7 @@ def test_legacy_spawn_argv_absolute_and_no_extra_args():
         def wait(self):
             return 0
 
+    authorize_local_agents()
     orig_popen = serve.subprocess.Popen
     serve.subprocess.Popen = P
     try:
@@ -104,6 +106,7 @@ def test_desktop_spawn_creates_run_dir_and_forwards_paths():
 
     serve._configure(tmp, "default", 8787)   # BEFORE patching Popen:
                                              # _configure runs git via subprocess.run
+    authorize_local_agents()
     orig_popen = serve.subprocess.Popen
     serve.subprocess.Popen = P
     try:
@@ -154,6 +157,7 @@ def test_desktop_rerun_reuses_latest_run_dir():
             return 0
 
     serve._configure(tmp, "default", 8787)
+    authorize_local_agents()
     orig_popen = serve.subprocess.Popen
     serve.subprocess.Popen = P
     try:
@@ -185,7 +189,10 @@ def test_merged_matrix_deep_merges_user_patch():
             base = yaml.safe_load(f)
         with open(serve.MERGED_MATRIX_PATH, encoding="utf-8") as f:
             merged = yaml.safe_load(f)
-        assert merged == base, "no patch yet -> merged equals base"
+        policy = merged.pop('local_agent_policy')
+        assert policy['confirmed'] is False and policy['enabled_kinds'] == []
+        from hub.api_connections import project_api_connections
+        assert merged == project_api_connections(base, {}), "base local metadata; no preset API connections"
 
         cfg = serve._load_config()
         cfg["budget"] = {"max_usd_per_run": 5.5}
@@ -225,7 +232,11 @@ def test_credentials_write_syncs_env_and_0600():
         assert os.environ.get("DEEPSEEK_API_KEY") == "sk-test"
         assert "OPENROUTER_API_KEY" not in serve._credentials_read()
         mode = os.stat(serve.CREDENTIALS_PATH).st_mode & 0o777
-        assert mode == 0o600, oct(mode)
+        if os.name == 'nt':
+            from hub.connection_store import verify_private
+            verify_private(serve.CREDENTIALS_PATH)
+        else:
+            assert mode == 0o600, oct(mode)
     finally:
         _restore(s)
         shutil.rmtree(tmp, ignore_errors=True)

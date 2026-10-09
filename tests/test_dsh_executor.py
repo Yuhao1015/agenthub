@@ -56,7 +56,7 @@ def _run(executor, prompt="count to five", context=""):
 def test_success_parses_stdout():
     original, _ = _patch_subprocess(stdout=b"one two three four five\n", returncode=0)
     try:
-        result = _run(DshExecutor(model="deepseek-v4-flash", workdir="."))
+        result = _run(DshExecutor(model="deepseek-v4-flash", workdir=".", dsh_path="fixture/dsh"))
     finally:
         asyncio.create_subprocess_exec = original
     assert result.ok is True
@@ -67,7 +67,7 @@ def test_success_parses_stdout():
 def test_argv_shape_and_patch_content():
     original, captured = _patch_subprocess(stdout=b"ok\n", returncode=0)
     try:
-        _run(DshExecutor(model="deepseek-v4-flash", workdir="."), prompt="hello task")
+        _run(DshExecutor(model="deepseek-v4-flash", workdir=".", dsh_path="fixture/dsh"), prompt="hello task")
     finally:
         asyncio.create_subprocess_exec = original
 
@@ -94,7 +94,7 @@ def test_argv_shape_and_patch_content():
 def test_model_override_writes_v4_pro_patch():
     original, captured = _patch_subprocess(stdout=b"ok\n", returncode=0)
     try:
-        _run(DshExecutor(model="deepseek-v4-pro", workdir="."))
+        _run(DshExecutor(model="deepseek-v4-pro", workdir=".", dsh_path="fixture/dsh"))
     finally:
         asyncio.create_subprocess_exec = original
     assert "model: deepseek-v4-pro" in captured["patch_content"], \
@@ -105,7 +105,7 @@ def test_model_override_writes_v4_pro_patch():
 def test_nonzero_exit_classifies_task_error():
     original, _ = _patch_subprocess(stdout=b"", stderr=b"something blew up", returncode=1)
     try:
-        result = _run(DshExecutor(model="deepseek-v4-flash", workdir="."))
+        result = _run(DshExecutor(model="deepseek-v4-flash", workdir=".", dsh_path="fixture/dsh"))
     finally:
         asyncio.create_subprocess_exec = original
     assert result.ok is False
@@ -117,7 +117,7 @@ def test_nonzero_exit_classifies_task_error():
 def test_auth_failure_classifies_unavailable():
     original, _ = _patch_subprocess(stdout=b"", stderr=b"invalid api key", returncode=1)
     try:
-        result = _run(DshExecutor(model="deepseek-v4-flash", workdir="."))
+        result = _run(DshExecutor(model="deepseek-v4-flash", workdir=".", dsh_path="fixture/dsh"))
     finally:
         asyncio.create_subprocess_exec = original
     assert result.ok is False
@@ -128,7 +128,7 @@ def test_auth_failure_classifies_unavailable():
 def test_empty_output_is_task_error():
     original, _ = _patch_subprocess(stdout=b"", stderr=b"", returncode=0)
     try:
-        result = _run(DshExecutor(model="deepseek-v4-flash", workdir="."))
+        result = _run(DshExecutor(model="deepseek-v4-flash", workdir=".", dsh_path="fixture/dsh"))
     finally:
         asyncio.create_subprocess_exec = original
     assert result.ok is False

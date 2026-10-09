@@ -44,6 +44,12 @@ agents:
     kind: codebuddy
     model: deepseek-v4-flash
     animal: squirrel
+  cc-haiku:
+    kind: claude_code
+    model: haiku
+    allowed_tools: Read
+    animal: rabbit
+    blurb: 轻快的订阅兜底，接简单任务和交接摘要
   or-deepseek:
     kind: openrouter
     model: deepseek/deepseek-chat
@@ -104,6 +110,7 @@ tiers:
   economy:
   - cc-hy3
   - cc-deepseek-cb
+  - cc-haiku
 budget:
   max_usd_per_run: 2.0
   max_attempts_per_task: 2

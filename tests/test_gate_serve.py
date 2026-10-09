@@ -54,11 +54,28 @@ def _req(port, method, path, obj=None):
     return response.status, data
 
 
-def _start(tmp, with_run=True):
+def authorize_local_agents():
+    """Fixture for execution tests representing an already-onboarded user."""
+    if not serve.CONFIG_PATH:
+        return  # Legacy raw matrices have no desktop consent policy.
+    from hub.local_agents import validate_local_settings
+    local = validate_local_settings({}, sys.platform)
+    local['confirmed'] = True
+    for entry in local['agents'].values():
+        entry['enabled'] = True
+    cfg = serve._load_config()
+    cfg['local_agents'] = local
+    serve._save_config(cfg)
+    serve._write_merged_matrix()
+
+
+def _start(tmp, with_run=True, authorize_agents=True):
     server = ThreadingHTTPServer(("127.0.0.1", 0), serve.Handler)
     port = server.server_address[1]
     threading.Thread(target=server.serve_forever, daemon=True).start()
     serve._configure(tmp, "default", port)
+    if authorize_agents:
+        authorize_local_agents()
     if with_run:
         serve._runs_add("r1", "goal")
         serve._adopt_latest_run()
@@ -171,6 +188,53 @@ def test_gate_token_rejects_stale_tab_and_allows_new_instance_reply():
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+def test_gate_cancel_stops_the_whole_run():
+    """Bug B4 (docs/decisions/gaps-2026-09-25.md): 「取消整个运行」 on a gate
+    used to only skip PENDING tasks inside the engine; a task already
+    approved kept running (and spending) to completion while the UI said
+    it was interrupted. Cancel from a gate must end the run exactly like
+    POST /cancel: whole process tree, recorded as a user cancellation."""
+    import subprocess
+    import time
+
+    for gate_id in ("task:t1", "plan"):
+        snapshot = _snap()
+        tmp = tempfile.mkdtemp(prefix="ah_gs_cancel_")
+        engine = None
+        try:
+            server, port = _start(tmp)
+            token = "3333333333333333"
+            Blackboard(serve.BOARD_PATH, on_write=lambda event: None).put(
+                f"run/gate/{gate_id}", {"kind": "task", "gate_token": token},
+                author="engine")
+            # a real stand-in engine, spawned the way _spawn_main spawns one
+            kwargs = ({"start_new_session": True} if os.name != "nt" else
+                      {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP})
+            engine = subprocess.Popen(
+                [sys.executable, "-c", "import time; time.sleep(60)"], **kwargs)
+            serve._current = engine
+            serve._run_meta["cancel_flag"] = {"cancel_requested": False}
+
+            code, data = _req(port, "POST", "/gate", {
+                "gate_id": gate_id, "gate_token": token, "decision": "cancel"})
+            assert code == 200, (gate_id, code, data)
+            deadline = time.monotonic() + 8
+            while engine.poll() is None and time.monotonic() < deadline:
+                time.sleep(0.1)
+            assert engine.poll() is not None, f"{gate_id}: run still alive after cancel"
+            assert serve._run_meta["cancel_flag"]["cancel_requested"] is True, \
+                "the watchdog must record this as a cancellation, not a crash"
+            reply = Blackboard(serve.BOARD_PATH, on_write=lambda event: None) \
+                .get(f"run/gate_reply/{gate_id}")
+            assert reply and reply["decision"] == "cancel", reply
+        finally:
+            if engine is not None and engine.poll() is None:
+                engine.kill()
+            server.shutdown()
+            _restore(snapshot)
+            shutil.rmtree(tmp, ignore_errors=True)
+
+
 def test_no_run_returns_404_not_a_dead_connection():
     snapshot = _snap()
     tmp = tempfile.mkdtemp(prefix="ah_gs_norun_")
@@ -188,10 +252,11 @@ def test_no_run_returns_404_not_a_dead_connection():
 def test_agents_endpoint_shape_and_honest_precision_label():
     snapshot = _snap()
     tmp = tempfile.mkdtemp(prefix="ah_gs_agents_")
-    original_which = serve.shutil.which
+    original_probe = serve._cached_local_agents
     try:
-        serve.shutil.which = lambda name: (
-            "/usr/local/bin/codex" if name == "codex" else original_which(name))
+        serve._cached_local_agents = lambda: [
+            {'id': kind, 'available': True, 'detail': 'cached; not verified'}
+            for kind in ('claude_code', 'codex', 'codebuddy')]
         server, port = _start(tmp)
         code, data = _req(port, "GET", "/agents")
         assert code == 200, (code, data)
@@ -208,7 +273,7 @@ def test_agents_endpoint_shape_and_honest_precision_label():
         assert codex["installed"] is True, codex
         assert data["precision"] == "kind" and data["note"], data
     finally:
-        serve.shutil.which = original_which
+        serve._cached_local_agents = original_probe
         server.shutdown()
         _restore(snapshot)
         shutil.rmtree(tmp, ignore_errors=True)

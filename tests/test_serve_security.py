@@ -157,6 +157,72 @@ def test_health_endpoint_shape():
         srv.shutdown()
 
 
+def _request(port, method, path, host=None, body=None, headers=None, want_location=False):
+    """Like the helpers above, but can put an arbitrary Host header on the
+    wire (http.client otherwise always sends 127.0.0.1:<port>)."""
+    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+    conn.putrequest(method, path, skip_host=host is not None)
+    if host is not None:
+        conn.putheader("Host", host)
+    for k, v in (headers or {}).items():
+        conn.putheader(k, v)
+    if body is not None:
+        conn.putheader("Content-Length", str(len(body)))
+    conn.endheaders(body)
+    r = conn.getresponse()
+    r.read()
+    conn.close()
+    return r.status if not want_location else (r.status, r.getheader("Location"))
+
+
+def test_only_the_two_pages_are_served_statically():
+    """B9 (2026-09-25): the static fallback served the whole working
+    directory (the launcher cd's to the repo root): source, .git/,
+    .claude/settings.local.json, any untracked file lying in the root."""
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    cwd = os.getcwd()
+    os.chdir(root)                     # the static handler serves the cwd
+    srv, port = _start_server()
+    try:
+        for page in ("/dashboard.html", "/settings.html", "/dashboard.html?v=2"):
+            assert _request(port, "GET", page) == 200, page
+        for leak in ("/serve.py", "/CLAUDE.md", "/.git/HEAD", "/hub/",
+                     "/dashboard.html/../serve.py"):
+            status = _request(port, "GET", leak)
+            assert status == 404, (leak, status)
+        assert _request(port, "HEAD", "/serve.py") == 404
+        # the bare origin used to be a directory listing; the preview pane
+        # and anyone typing localhost:8787 land there, so send them on
+        status, location = _request(port, "GET", "/", want_location=True)
+        assert status == 302 and location == "/dashboard.html", (status, location)
+    finally:
+        srv.shutdown()
+        os.chdir(cwd)
+    print("PASS: test_only_the_two_pages_are_served_statically")
+
+
+def test_foreign_host_is_rejected():
+    """B9: DNS rebinding. A page on evil.example whose name re-resolves to
+    127.0.0.1 is same-origin with this server as far as the browser can
+    tell, so it could read /settings, /events.jsonl, /file, /export...
+    (POST had an Origin check; GET checked nothing.) Its requests still
+    say Host: evil.example:<port> -- only our own names get through."""
+    srv, port = _start_server()
+    try:
+        for host in (f"127.0.0.1:{port}", f"localhost:{port}", f"LOCALHOST:{port}"):
+            assert _request(port, "GET", "/health", host=host) == 200, host
+        for host in (f"evil.example:{port}", f"127.0.0.1:{port + 1}", "127.0.0.1", ""):
+            for path in ("/health", "/settings", "/events.jsonl", "/dashboard.html"):
+                status = _request(port, "GET", path, host=host)
+                assert status == 403, (host, path, status)
+        status = _request(port, "POST", "/run", host=f"evil.example:{port}", body=b"{}",
+                          headers={"Content-Type": "application/json"})
+        assert status == 403, status
+    finally:
+        srv.shutdown()
+    print("PASS: test_foreign_host_is_rejected")
+
+
 def test_run_mock_flag_forwarded():
     """4.6's zero-cost demo button rides POST /run {"mock": true} -- the
     flag must survive to the spawned argv."""
@@ -200,5 +266,7 @@ if __name__ == "__main__":
     test_shutdown_busy_returns_409_without_shutdown()
     test_shutdown_idle_runs_shutdown_in_another_thread()
     test_health_endpoint_shape()
+    test_only_the_two_pages_are_served_statically()
+    test_foreign_host_is_rejected()
     test_run_mock_flag_forwarded()
     print("\nAll serve security/shutdown tests passed.")

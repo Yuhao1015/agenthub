@@ -47,8 +47,28 @@ def test_easy_task_routes_to_economy_tier():
     router = Router("hub/capability_matrix.yaml", workdir=".", mock_all=True)
     task = Task(id="t1", title="x", type=TaskType.WRITING, prompt="p", difficulty="easy")
     names = [n for n, _ in router.chain_for(task)]
-    assert names == ["cc-hy3", "cc-deepseek-cb"], f"unexpected economy chain: {names}"
+    assert names == ["cc-hy3", "cc-deepseek-cb", "cc-haiku"], f"unexpected economy chain: {names}"
     print("PASS: test_easy_task_routes_to_economy_tier")
+
+
+def test_easy_tasks_and_summaries_survive_without_workbuddy():
+    """B5 (2026-09-25): the economy tier was all codebuddy. Without WorkBuddy
+    (its auto-detect only knows the macOS install) preflight circuit-breaks
+    both, chain_for() comes back empty, and every easy writing/analysis/
+    light task -- plus every summary, which hub/summarizer.py routes through
+    this same tier as an easy LIGHT task -- fails outright."""
+    from hub.models import Task, TaskType
+    from hub.router import Router
+
+    router = Router("hub/capability_matrix.yaml", workdir=".")
+    for name in router.codebuddy_agents():        # what preflight does on such a machine
+        router.open_circuit(name)
+    for task_type in (TaskType.WRITING, TaskType.ANALYSIS, TaskType.LIGHT):
+        task = Task(id="t1", title="x", type=task_type, prompt="p", difficulty="easy")
+        names = [n for n, _ in router.chain_for(task)]
+        assert names, f"{task_type.value}/easy has no agent left without WorkBuddy"
+        assert all(router.kind(n) == "claude_code" for n in names), names
+    print("PASS: test_easy_tasks_and_summaries_survive_without_workbuddy")
 
 
 def test_medium_and_hard_tasks_route_to_mid_tier():
@@ -208,6 +228,7 @@ if __name__ == "__main__":
     test_plan_from_json_reads_difficulty_and_specialty()
     test_plan_from_json_defaults_difficulty_and_specialty()
     test_easy_task_routes_to_economy_tier()
+    test_easy_tasks_and_summaries_survive_without_workbuddy()
     test_medium_and_hard_tasks_route_to_mid_tier()
     test_specialty_match_sorted_to_front_stably()
     test_no_specialty_preserves_configured_order()

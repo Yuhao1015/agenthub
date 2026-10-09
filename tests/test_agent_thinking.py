@@ -99,6 +99,7 @@ class _FakeStreamProc:
         self._stderr = stderr
         self.stdout = self
         self.stderr = self
+        self.stdin = self       # claude's prompt goes through stdin (B2)
 
     async def readline(self):
         if not self._lines:
@@ -107,6 +108,15 @@ class _FakeStreamProc:
 
     async def read(self):
         return self._stderr
+
+    def write(self, data):
+        pass
+
+    async def drain(self):
+        pass
+
+    def close(self):
+        pass
 
     async def wait(self):
         return self.returncode
@@ -290,12 +300,22 @@ def test_claude_streaming_oversized_line_is_task_error_not_crash():
             self.returncode = 0
             self.stdout = self
             self.stderr = self
+            self.stdin = self
 
         async def readline(self):
             raise asyncio.LimitOverrunError("line too long", 999)
 
         async def read(self):
             return b""
+
+        def write(self, data):
+            pass
+
+        async def drain(self):
+            pass
+
+        def close(self):
+            pass
 
         async def wait(self):
             return self.returncode

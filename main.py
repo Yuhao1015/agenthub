@@ -21,9 +21,11 @@ import json
 import os
 import sys
 
+from hub import run_changes
 from hub.blackboard import Blackboard
 from hub.engine import Engine
 from hub.models import EventBus, Plan
+from hub.api_budget import PaidLedger, board_budget_path
 from hub.planner import make_plan
 from hub.router import Router
 
@@ -50,6 +52,8 @@ async def amain() -> int:
     ap.add_argument("--goal", help="natural-language goal (AI planner decomposes it)")
     ap.add_argument("--plan", help="path to a plan JSON file (skips AI planning)")
     ap.add_argument("--matrix", default="hub/capability_matrix.yaml")
+    ap.add_argument("--credentials-file", default="", help="local credential store path; never a key")
+    ap.add_argument("--paid-budget-source", default="", help="confirmed manager paid-ledger seed path")
     ap.add_argument("--workdir", default=".", help="working dir for Claude Code tasks")
     ap.add_argument("--events", default="events.jsonl")
     ap.add_argument("--board", default="blackboard.jsonl", help="blackboard storage path")
@@ -76,6 +80,13 @@ async def amain() -> int:
                     help="ask = pause before write-capable tasks start")
     ap.add_argument("--assign-mode", default="auto", choices=["auto", "manual"],
                     help="manual = pin an agent per task at the plan gate")
+    ap.add_argument("--checkpoint-store", default="",
+                    help="Agent Hub's shadow git dir for change checkpoints "
+                         "(serve.py passes it; without it the run takes none)")
+    ap.add_argument("--run-id", default="", help="run id used in checkpoint ref names")
+    ap.add_argument("--checkpoint-exclude", action="append", default=[],
+                    help="a path inside the workdir that checkpoints must never "
+                         "include (serve.py passes its data dir); repeatable")
     args = ap.parse_args()
 
     if not args.goal and not args.plan and not args.resume:
@@ -90,12 +101,23 @@ async def amain() -> int:
     os.makedirs(args.workdir, exist_ok=True)
     router = Router(args.matrix, workdir=args.workdir, mock_all=args.mock,
                     stream=not args.no_streaming)
+    if args.credentials_file:
+        from hub.connection_store import ConnectionStore
+        router.bind_api_store(ConnectionStore(
+            os.path.join(os.path.dirname(os.path.abspath(args.matrix)), 'config.yaml'),
+            args.credentials_file))
     bus = EventBus(args.events)
 
     goal = args.goal
     constraints = args.constraints or ""
     if args.interactive:
         from hub.manager import run_clarification_loop
+        # Clarification can spend money before the user confirms a new run.
+        # Keep its own durable scope without touching the previous blackboard.
+        manager_budget_path = args.board + '.manager-api-budget.json'
+        manager_ledger = PaidLedger(router.budget.get('max_usd_per_run', 2.0), path=manager_budget_path)
+        manager_ledger.persist()
+        router.bind_paid_ledger(manager_ledger)
 
         async def ask_user(question: str) -> str:
             print(f"\n[经理] {question}")
@@ -118,29 +140,59 @@ async def amain() -> int:
         os.remove(args.board)
     board = Blackboard(args.board,
                        on_write=lambda e: bus.emit("blackboard_write", **e))
+    seed = router.paid_ledger.snapshot()
+    limit = router.budget.get('max_usd_per_run', 2.0)
+    if args.paid_budget_source and not args.resume:
+        seed = PaidLedger(limit, path=args.paid_budget_source).snapshot()
+    ledger = PaidLedger(limit, seed['spent_usd'], seed['unknown'],
+                        path=board_budget_path(args.board), reset=not args.resume)
+    ledger.persist()
+    router.bind_paid_ledger(ledger)
+    if args.interactive and os.path.exists(manager_budget_path):
+        os.unlink(manager_budget_path)  # Transferred only after the run copy is durable.
+    if args.resume and not args.goal and not args.plan and not os.path.exists(args.board):
+        # 必须在下面拍基线之前查：基线要往黑板写段记录，一写文件就存在了
+        print("no existing blackboard to resume from -- need --goal or "
+              "--plan for a fresh run", file=sys.stderr)
+        return 1
+    # 基线在调 planner、读计划之前（change-safety-net.md §3.2）：planning 的
+    # 降级链里有带 Bash 的 cc-sonnet 和全权的 codex，拆解任务时也可能改文件
+    seg, ckpt = run_changes.begin(board, args.checkpoint_store, args.workdir, args.run_id,
+                                  kind="rerun" if args.resume else "run", author="engine",
+                                  exclude=tuple(args.checkpoint_exclude))
 
     if args.plan:
         with open(args.plan, encoding="utf-8") as f:
             plan = Plan.from_json(json.load(f))
     elif args.goal:
         print(f"Planning goal: {goal}")
-        plan = await make_plan(goal, router)
+        try:
+            plan = await make_plan(goal, router, constraints=constraints)
+        except (RuntimeError, ValueError) as e:
+            # goal 模式最常见的失败。原来只有一段 traceback 进 serve 的控制台，
+            # 前端只看得到「exit code 1」（bug B11）——原因要进事件流
+            run_changes.end(board, seg, author="engine")
+            paid = router.paid_ledger.snapshot()
+            bus.emit('api_cost_updated', paid_api_cost_usd=paid['spent_usd'],
+                     total_cost_usd=paid['spent_usd'], cost_complete=not paid['unknown'])
+            bus.emit("run_crashed", error=f"拆解任务失败：{e}"[:500],
+                     total_cost_usd=paid['spent_usd'], cost_complete=not paid['unknown'])
+            bus.close()
+            return 1
     else:
         # --resume with neither --goal nor --plan: force-rerun a previous
         # run's STALE tasks. Goal-driven runs never persist their Planner-
         # generated plan to a reusable file, so the blackboard's own
         # tasks/*/spec entries (written by every run, see hub/engine.py)
         # are the only source of truth left to reconstruct the DAG from.
-        if not os.path.exists(args.board):
-            print("no existing blackboard to resume from -- need --goal or "
-                  "--plan for a fresh run", file=sys.stderr)
-            return 1
+        # (That the board exists was checked above, before the baseline.)
         plan = Plan.from_blackboard(board)
 
     engine = Engine(plan, router, bus, board, max_parallel=args.parallel, resume=args.resume,
                     preflight=not args.no_preflight, constraints=constraints,
                     summarize_enabled=not args.no_summarize, workdir=args.workdir,
-                    gate_mode=args.gate_mode, assign_mode=args.assign_mode)
+                    gate_mode=args.gate_mode, assign_mode=args.assign_mode,
+                    checkpoint_seg=seg, checkpoint_status=ckpt)
     plan = await engine.run()
     bus.close()
 

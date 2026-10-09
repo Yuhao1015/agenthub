@@ -39,14 +39,14 @@ def test_archived_chat_is_keyed_by_run_and_not_put_in_prechat():
 
 def test_plan_created_consumes_archived_chat_only_once():
     branch = _between('if(e.type==="plan_created"){',
-                      '  }else{\n    const sess=S.sessions[S.sessions.length-1];')
+                      '  }else{\n    const sess=currentRunSession();')
     assert "managerChatsByRun" in branch
     assert "delete S.managerChatsByRun" in branch
 
 
 def test_active_draft_keeps_the_latest_after_old_run_replay():
     branch = _between('if(e.type==="plan_created"){',
-                      '  }else{\n    const sess=S.sessions[S.sessions.length-1];')
+                      '  }else{\n    const sess=currentRunSession();')
     assert re.search(r"S\.chatSession\s*\?\s*S\.sessions\.length", branch), \
         "active draft must stay in the slot after the replayed run"
 

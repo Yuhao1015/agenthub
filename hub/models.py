@@ -67,6 +67,7 @@ class Task:
     difficulty: str = "medium"             # "easy" | "medium" | "hard", set by Planner
     specialty: Optional[str] = None        # e.g. "frontend"; None = no preference
     pinned_agent: Optional[str] = None     # 用户在计划门上钉死的 agent。
+    execution_options: dict = field(default_factory=dict)  # explicit per-task model/effort snapshot
                                             # 独占：设了就不走降级链 -- 用户
                                             # 钉选的动机常常是「别用 X 省额度」，
                                             # 偷偷降级回 X 是背叛。见 spec §3.7
@@ -96,6 +97,7 @@ class Plan:
                 difficulty=t.get("difficulty", "medium"),
                 specialty=t.get("specialty"),
                 pinned_agent=t.get("pinned_agent"),
+                execution_options=dict(t.get('execution_options') or {}),
             )
             plan.tasks[task.id] = task
         plan.validate()
@@ -126,6 +128,7 @@ class Plan:
                 difficulty=spec.get("difficulty", "medium"),
                 specialty=spec.get("specialty"),
                 pinned_agent=spec.get("pinned_agent"),
+                execution_options=dict(spec.get('execution_options') or {}),
             )
         plan.validate()
         return plan
@@ -179,7 +182,9 @@ class EventBus:
     agent_failed, agent_circuit_open, preflight_result, task_completed,
     task_failed, run_finished, blackboard_write, summary_generated,
     task_awaiting_input, task_message_replied, task_auto_finished, task_stale,
-    run_crashed, run_cancelled, gate_opened, gate_resolved.
+    run_crashed, run_cancelled, gate_opened, gate_resolved, run_rolled_back.
+    Additive fields: plan_created.checkpoints, task_completed.changes
+    (docs/decisions/change-safety-net.md §3.4).
     """
 
     def __init__(self, path: str):

@@ -1,11 +1,9 @@
 <!DOCTYPE html>
-<html lang="zh" data-theme="dark">
+<html lang="zh" data-theme="light">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Agent Hub · 设置</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;800&family=Press+Start+2P&display=swap" rel="stylesheet">
 <style>
 :root[data-theme="dark"]{
   --bg:#191817; --surface:#201f1e; --surface2:#2a2827; --raise:#302e2d;
@@ -80,6 +78,13 @@ textarea{font:inherit;color:var(--ink);background:var(--surface2);border:1px sol
   border:1px solid var(--line);border-radius:10px;padding:9px 16px;font-size:12.5px;box-shadow:0 8px 24px rgba(0,0,0,.3)}
 .hintbar.err{color:var(--accent)}
 </style>
+<link rel="stylesheet" href="assets/connections.css">
+<link rel="stylesheet" href="assets/async-ui.css">
+<link rel="stylesheet" href="assets/agent-catalog.css">
+<script src="assets/async-ui.js"></script>
+<script src="assets/agent-catalog.js"></script>
+<link rel="stylesheet" href="assets/settings-navigation.css">
+<script src="assets/settings-navigation.js"></script>
 </head>
 <body>
 <div class="wrap">
@@ -107,12 +112,12 @@ textarea{font:inherit;color:var(--ink);background:var(--surface2);border:1px sol
     <h2>工作区域 <span class="tag">交付物写进哪个文件夹 · 下次运行生效</span></h2>
     <div class="row"><span class="name"><b>当前工作区域</b>
       <span class="d mono" id="wk-current"></span></span>
-      <button class="btn small" id="wk-reveal">在访达中打开</button>
+      <button class="btn small" id="wk-reveal">打开文件夹</button>
     </div>
     <div class="field">
       <label>换成已有文件夹</label>
       <input id="wk-path" placeholder="粘贴一个文件夹的绝对路径…">
-      <button class="btn small" id="wk-pick" title="macOS 弹系统选择器">选择文件夹…</button>
+      <button class="btn small" id="wk-pick" title="打开系统文件夹选择器">选择文件夹…</button>
       <button class="btn small primary" id="wk-save">保存</button>
     </div>
     <div class="field">
@@ -122,34 +127,29 @@ textarea{font:inherit;color:var(--ink);background:var(--surface2);border:1px sol
     <div class="note">工作区域是 agent 写交付物的文件夹。保存后<strong>下一次
       运行</strong>开始，产出会直接写进你选的文件夹（正在跑的运行不受影响，
       旧运行的交付物留在原目录，不会自动搬过去）。文件夹必须在数据目录之外，
-      避免跟运行记录混在一起。macOS 点「选择文件夹…」会弹系统选择器；其它
-      系统请手动粘贴路径。</div>
+      避免跟运行记录混在一起。Windows 和 macOS 点「选择文件夹…」会弹系统选择器，也可以手动粘贴绝对路径。</div>
   </div>
 
   <div class="card" id="card-agents">
     <h2>员工入职清单 <span class="tag">本机探测 · 零花费</span></h2>
     <div id="agents"></div>
-    <button class="btn small" id="reprobe" style="margin-top:8px">重新探测</button>
+    <button class="btn small" id="reprobe" style="margin-top:8px">接入本机 Agent</button>
   </div>
 
   <div class="card" id="card-tools">
-    <h2>工具权限 <span class="tag">只收紧 · 仅 claude_code · 下次 run 生效</span></h2>
+    <h2>工具权限 <span class="tag">按 Agent 分组 · 保留每个角色的权限上限</span></h2>
     <div id="tools"></div>
-    <div class="note">只能去掉工具、不能加回矩阵里没有的；全不勾会自动保留
-      Read（空字符串实测不会限制任何工具，Read 是验证过的最小集）。改动写入
-      本地 config.yaml 的 matrix_patch，下一次运行生效；codebuddy/dsh/
-      openrouter 不读这个字段。</div>
+    <div class="note">展开 Agent 查看权限来源。Claude Code 按角色保存工具限制，全不勾选会保留 Read；其他 Agent 的权限由其沙箱或本机工具控制。</div>
   </div>
 
   <div class="card" id="card-preflight">
-    <h2>真实体检 <span class="tag">每台机器跑一次 · 每个 agent 花几个 token</span></h2>
+    <h2>真实体检 <span class="tag">按 Agent 展开 · 每次只测试一个模型</span></h2>
     <div id="preflight"></div>
-    <button class="btn primary" id="run-preflight" style="margin-top:8px">开始体检</button>
-    <div class="note">体检会用真实调用验证每个 agent 对当前账号是否真的可用——存在性探测查不出"装了、登录了、但这个模型对这个账号不可用"（CLAUDE.md §4 的真实事故）。</div>
+    <div class="note">安装与登录检查不会调用模型。目录仅显示 Agent 返回的型号；选中一个模型并确认费用后才会测试。</div>
   </div>
 
   <div class="card" id="card-budget">
-    <h2>护栏金额 <span class="tag">你自己定 · 只对 openrouter 按量付费生效</span></h2>
+    <h2>护栏金额 <span class="tag">你自己定 · 按量 API</span></h2>
     <div class="field">
       <label>max_usd_per_run（美元）</label>
       <input id="budget" type="number" min="0" step="0.5">
@@ -158,18 +158,11 @@ textarea{font:inherit;color:var(--ink);background:var(--surface2);border:1px sol
     <div class="note">claude_code 订阅额度与 codebuddy 积分消耗不计入此护栏；dsh 暂无用量上报，也不计入。</div>
   </div>
 
-  <div class="card" id="card-keys">
-    <h2>密钥 <span class="tag">只写本机文件 · 永不联网 · 不回显</span></h2>
-    <div class="field">
-      <label>DeepSeek API Key <span id="ds-state" class="pill"></span></label>
-      <input id="ds-key" type="password" placeholder="sk-…（留空 = 不修改）">
-      <button class="btn small primary" id="save-keys">保存</button>
-    </div>
-    <div class="field">
-      <label>OpenRouter API Key <span id="or-state" class="pill"></span></label>
-      <input id="or-key" type="password" placeholder="sk-or-…（留空 = 不修改）">
-    </div>
-    <div class="note">claude / workbuddy 走各家 CLI 登录（claude login / WorkBuddy 登录），不在这里配。</div>
+  <div class="card" id="card-api-connections">
+    <h2>API 连接 <span class="tag">自带模型与密钥 · 按需接入</span></h2>
+    <p>添加自己的服务，选择 OpenAI 兼容（Chat Completions）、Anthropic（Messages）或 OpenRouter 格式。每个连接单独管理模型与密钥。</p>
+    <button class="btn primary" id="api-connections">管理 API 连接</button>
+    <div class="note">密钥只保存在本机，不回显。保存不会请求模型；测试连接需单独确认，可能收费。本机 Agent 使用各自已登录的账号。</div>
   </div>
 
   <div class="card" id="card-demo">
@@ -188,10 +181,6 @@ textarea{font:inherit;color:var(--ink);background:var(--surface2);border:1px sol
     <div style="margin-top:10px">
       <label style="font-size:12.5px;color:var(--dim);display:block;margin-bottom:4px">目标</label>
       <textarea id="sch-goal" rows="3" placeholder="生成本周工作总结，涵盖…"></textarea>
-    </div>
-    <div class="field">
-      <label>从模板预填（可选）</label>
-      <select id="sch-goal-tpl"><option value="">— 不使用模板 —</option></select>
     </div>
     <div class="field">
       <label>频率</label>
@@ -234,6 +223,7 @@ textarea{font:inherit;color:var(--ink);background:var(--surface2);border:1px sol
   </div>
 
   <div class="card" id="card-backup">
+    <div class="field"><label for="bk-run">导出运行交付物</label><select id="bk-run"></select><button class="btn small" id="bk-export">下载 ZIP</button></div>
     <h2>备份数据 <span class="tag">普通文件 · 用你的系统工具复制即可</span></h2>
     <div class="row">
       <span class="name"><b>当前项目数据</b><span class="d mono" id="bk-runtime"></span></span>
@@ -268,7 +258,7 @@ textarea{font:inherit;color:var(--ink);background:var(--surface2);border:1px sol
     <div style="margin-top:10px"><a class="btn small" href="https://github.com" target="_blank" rel="noopener">检查更新（去仓库页面 git pull）</a></div>
   </div>
 
-  <div class="card">
+  <div class="card" id="card-quit">
     <h2>退出</h2>
     <button class="btn" id="quit-btn">退出 Agent Hub（关闭本机服务）</button>
     <div class="note">有任务在跑时会拒绝退出，先等任务结束。</div>
@@ -280,7 +270,7 @@ textarea{font:inherit;color:var(--ink);background:var(--surface2);border:1px sol
 const $=q=>document.querySelector(q);
 // 引号必须一起转义——本页最直接的注入点是运行历史那颗"复制目标"按钮的
 // data-copy="…"：goal 文本可能是经理 LLM 生成的提案，带一个 " 就能闭合
-// 属性再塞事件属性进来。工具权限的 data-tool="…"、模板下拉的 value="…"
+// 属性再塞事件属性进来。工具权限的 data-tool="…"
 // 同理。放在文本位置时 &quot; 照样渲染成 "，无副作用。
 const esc=s=>String(s==null?"":s).replace(/[&<>"']/g,
   c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
@@ -315,7 +305,7 @@ function renderAgents(agents){
   for(const a of agents){
     const d=document.createElement("div");d.className="row";
     d.innerHTML='<span class="name"><b>'+esc(a.label)+'</b><span class="d">'+esc(a.detail)+'</span></span>'+
-      '<span class="pill '+(a.available?"ok":"no")+'">'+(a.available?"已就绪":"未安装")+'</span>';
+      '<span class="pill '+(a.available?"ok":"no")+'">'+(a.enabled?({logged_in:"已接入 · 已登录",not_logged_in:"已接入 · 未登录",unsupported:"已接入 · 登录检查暂不支持"}[a.inspection?.auth?.status]||"已接入 · 待检查登录"):a.available?"已发现 · 未接入":"尚未找到")+'</span>';
     box.appendChild(d);
   }
 }
@@ -334,50 +324,19 @@ function removeAgentFromRoutes(name,routes,tiers){
   return {routes:r,tiers:t};
 }
 
-function renderPreflight(results){
-  const box=$("#preflight");box.innerHTML="";
-  if(!results){box.innerHTML='<div class="note">还没体检过——点“开始体检”跑一次真实探测。</div>';return;}
-  const entries=Object.entries(results||{});
-  if(!entries.length){box.innerHTML='<div class="note">矩阵里没有可体检的 agent（claude_code/codebuddy/dsh）。</div>';return;}
-  for(const [name,r] of entries){
-    const d=document.createElement("div");d.className="row";
-    d.innerHTML='<span class="name"><b>'+esc(name)+'</b><span class="d">'+
-      (r.ok?("可用 · $"+r.cost_usd):esc(r.error||"失败"))+'</span></span>'+
-      '<span class="pill '+(r.ok?"ok":"no")+'">'+(r.ok?"通过":"不可用")+'</span>';
-    box.appendChild(d);
-    if(!r.ok&&INFO){
-      const chains=routesContaining(name,INFO.routes,INFO.tiers);
-      if(chains.length){
-        const adv=document.createElement("div");adv.className="advice";
-        adv.innerHTML='<span class="txt">这个 agent 在降级链里：'+esc(chains.join("、"))+
-          '。留着它，每次任务都会先白撞一次失败的门再降级。</span>';
-        const b=document.createElement("button");b.className="btn small primary";
-        b.textContent="从所有降级链移除";
-        b.onclick=async()=>{
-          try{
-            const np=removeAgentFromRoutes(name,INFO.routes,INFO.tiers);
-            const patch=Object.assign({},INFO.matrix_patch||{},np);
-            await post("/settings/config",{matrix_patch:patch});
-            INFO=await getJSON("/settings");
-            hint("已移除 "+name+"，下次运行生效");
-            renderAll();
-          }catch(e){hint("移除失败："+e.message,true)}
-        };
-        adv.appendChild(b);
-        box.appendChild(adv);
-      }
-    }
-  }
-}
-
 function renderRuns(runs){
   const box=$("#runs");box.innerHTML="";
   if(!runs||!runs.length){box.innerHTML='<div class="note">还没有运行记录。</div>';return;}
   const st={running:"运行中",done:"完成",failed:"有失败",crashed:"崩溃"};
   for(const r of runs.slice().reverse()){
     const d=document.createElement("div");d.className="r";
+    // 改动安全网（change-safety-net.md §5.4）：旧运行从这里进审阅页
+    const changes=Number(r.changes)||0;
     d.innerHTML='<span class="st pill '+(r.status==="done"?"ok":(r.status==="crashed"||r.status==="failed"?"no":"busy"))+'">'+
       (st[r.status]||r.status)+'</span><span class="mono" style="flex:1">'+esc(r.goal||r.run_id)+'</span>'+
+      (changes?'<span class="pill busy">改动 '+changes+'</span>':'')+
+      (r.rolled_back?'<span class="pill busy">已回滚</span>':'')+
+      (changes?'<a class="mono" href="/dashboard.html#review='+encodeURIComponent(r.run_id||"")+'">审阅</a>':'')+
       '<span class="mono">$'+((r.cost_usd||0)).toFixed(4)+'</span><span class="mono">'+ts(r.ts)+'</span>';
     box.appendChild(d);
   }
@@ -396,6 +355,9 @@ function fmtLastFired(s){
   return s.last_fired_date+" · "+(st[s.last_fired_status]||s.last_fired_status||"");
 }
 function renderBackup(info){
+  const select=$("#bk-run");select.replaceChildren();
+  for(const run of info.runs||[]){const option=document.createElement('option');option.value=run.run_id;option.textContent=run.goal||run.run_id;select.append(option)}
+  $("#bk-export").disabled=!select.options.length;
   const NA="（未配置数据目录——当前不是桌面模式）";
   $("#bk-runtime").textContent=info.runtime_dir||NA;
   $("#bk-creds").textContent=info.credentials_path||NA;
@@ -407,15 +369,15 @@ function renderBackup(info){
 }
 $("#bk-copy-runtime").onclick=()=>{
   if(navigator.clipboard&&INFO.runtime_dir)
-    navigator.clipboard.writeText(INFO.runtime_dir).then(()=>hint("路径已复制"));
+    return navigator.clipboard.writeText(INFO.runtime_dir).then(()=>hint("路径已复制"));
 };
 $("#bk-copy-creds").onclick=()=>{
   if(navigator.clipboard&&INFO.credentials_path)
-    navigator.clipboard.writeText(INFO.credentials_path).then(()=>hint("路径已复制"));
+    return navigator.clipboard.writeText(INFO.credentials_path).then(()=>hint("路径已复制"));
 };
 $("#bk-copy-datadir").onclick=()=>{
   if(navigator.clipboard&&INFO.data_dir)
-    navigator.clipboard.writeText(INFO.data_dir).then(()=>hint("路径已复制"));
+    return navigator.clipboard.writeText(INFO.data_dir).then(()=>hint("路径已复制"));
 };
 
 function renderWorkdir(info){
@@ -459,10 +421,22 @@ $("#wk-reveal").onclick=async()=>{
   catch(e){hint("打开失败："+e.message,true)}
 };
 
-function renderTools(agents){
+function renderTools(agents,groups){
   const box=$("#tools");box.innerHTML="";
-  if(!agents||!agents.length){box.innerHTML='<div class="note">矩阵里没有带工具权限的 claude_code agent。</div>';return;}
+  if(!groups?.length&&!agents?.length){box.innerHTML='<div class="note">还没有已配置的 Agent 权限信息。</div>';return;}
+  if(groups){
+    for(const group of groups){
+      const details=document.createElement("details"),summary=document.createElement("summary"),note=document.createElement("p");
+      details.dataset.permissionKind=group.kind;summary.textContent=group.label;note.className="note";note.textContent=group.control_source;details.append(summary,note);box.append(details);
+      if(group.editable){renderToolProfiles(group.profiles,details)}else{const p=document.createElement("p");p.className="note";p.textContent=group.profiles.map(p=>p.name).join("、");details.append(p)}
+    }
+    return;
+  }
+  renderToolProfiles(agents,box);
+}
+function renderToolProfiles(agents,box){
   for(const a of agents){
+    if(!a.base)continue;
     const d=document.createElement("div");d.className="row";
     d.style.flexWrap="wrap";
     let chips="";
@@ -478,7 +452,7 @@ function renderTools(agents){
       (a.patched?' <span class="tag">已收紧过</span>':'')+
       '</b><span class="d" style="margin-top:4px">'+chips+'</span></span>';
     const b=document.createElement("button");b.className="btn small";b.textContent="保存";
-    b.onclick=()=>saveTools(a.name,d);
+    b.onclick=()=>AsyncUI.run(b,"正在保存权限…",()=>saveTools(a.name,d));
     d.appendChild(b);
     box.appendChild(d);
   }
@@ -490,7 +464,7 @@ async function saveTools(agent,row){
     const data=await post("/settings/tools",{agent:agent,allowed:allowed});
     if(data.clamped)hint("已自动保留最小集 Read");
     else hint("工具权限已保存，下次运行生效");
-    renderTools(data.agents);
+    renderTools(data.agents,data.groups);
   }catch(e){hint("保存失败："+e.message,true)}
 }
 
@@ -505,7 +479,7 @@ function renderProjects(cur,projects){
       '</span></span>';
     const b=document.createElement("button");
     b.className="btn small";b.textContent="切换";
-    b.onclick=()=>doSwitchProject(p.name);
+    b.onclick=()=>AsyncUI.run(b,"正在切换项目…",()=>doSwitchProject(p.name));
     d.appendChild(b);
     box.appendChild(d);
   }
@@ -533,23 +507,14 @@ function renderSchedules(schedules){
     d.innerHTML='<span class="name"><b>'+esc(s.name)+'</b><span class="d">'+
       esc(fmtSchedule(s))+' · '+esc(fmtLastFired(s))+' · '+esc(s.goal)+'</span></span>';
     const del=document.createElement("button");del.className="btn small";del.textContent="删除";
-    del.onclick=async()=>{
+    del.onclick=()=>AsyncUI.run(del,"正在删除…",async()=>{
       if(!window.confirm("删除定时目标"+s.name+"？"))return;
       try{await post("/schedules/delete",{id:s.id});hint("已删除");await renderAll();}
       catch(e){hint("删除失败："+e.message,true)}
-    };
+    });
     d.appendChild(del);
     box.appendChild(d);
   }
-}
-function renderSchTplOptions(templates){
-  const sel=$("#sch-goal-tpl");if(!sel)return;
-  // 空库时别只留一行"不使用模板"让人猜：直接说清楚模板去哪建
-  const first=(templates&&templates.length)
-    ?"— 不使用模板 —"
-    :"还没有模板——先回办公室页，在输入框写好目标后点「存为模板」";
-  sel.innerHTML='<option value="">'+esc(first)+'</option>'+
-    (templates||[]).map(t=>'<option value="'+esc(t.id)+'">'+esc(t.name)+'</option>').join("");
 }
 function syncFreqUI(){$("#sch-weekday").style.display=$("#sch-freq").value==="weekly"?"":"none";}
 
@@ -674,8 +639,10 @@ function renderTrend(){
   $("#trend-summary").textContent="窗口内共 "+totalCount+" 次运行 · 合计 $"+totalCost.toFixed(4);
 }
 
+let renderRevision=0;
 async function renderAll(){
-  INFO=await getJSON("/settings");
+  const token=++renderRevision;
+  const info=await getJSON("/settings");if(token!==renderRevision)return;INFO=info;
   $("#meta").textContent="v"+INFO.version+(INFO.commit?" · "+INFO.commit:"")+" · "+INFO.data_dir;
   renderBackup(INFO);
   renderWorkdir(INFO);
@@ -687,57 +654,28 @@ async function renderAll(){
   $("#runs-meta").textContent=(INFO.runs||[]).length+" 次运行";
   renderRuns(INFO.runs);
   renderTrend();
-  renderPreflight(INFO.preflight&&INFO.preflight.results);
+  const local=await getJSON("/settings/local-agents");if(token!==renderRevision)return;
+  renderAgents(local.agents);
+  AgentCatalog.mount($("#preflight"),{rows:local.agents});
   renderSchedules(INFO.schedules);
-  renderSchTplOptions(INFO.templates);
   const proj=await getJSON("/settings/projects");
-  renderProjects(proj.current,proj.projects);
+  if(token!==renderRevision)return;renderProjects(proj.current,proj.projects);
   const tools=await getJSON("/settings/tools");
-  renderTools(tools.agents);
-  $("#ds-state").className="pill "+(INFO.credentials.deepseek?"ok":"no");
-  $("#ds-state").textContent=INFO.credentials.deepseek?"已配置":"未配置";
-  $("#or-state").className="pill "+(INFO.credentials.openrouter?"ok":"no");
-  $("#or-state").textContent=INFO.credentials.openrouter?"已配置":"未配置";
-  $("#run-preflight").disabled=INFO.busy;
+  if(token!==renderRevision)return;renderTools(tools.agents,tools.groups);
+
   $("#demo-btn").disabled=INFO.busy;
   $("#quit-btn").disabled=INFO.busy;
 }
 
-$("#reprobe").onclick=async()=>{
-  try{renderAgents((await getJSON("/settings/agents")).agents);hint("已重新探测");}
-  catch(e){hint("探测失败："+e.message,true)}
-};
-$("#run-preflight").onclick=async()=>{
-  $("#run-preflight").disabled=true;$("#run-preflight").textContent="体检中…（会花几个 token）";
-  try{
-    const r=await post("/settings/preflight",{});
-    $("#run-preflight").textContent="重新体检";
-    await renderAll();
-    hint("体检完成");
-  }catch(e){
-    $("#run-preflight").disabled=false;$("#run-preflight").textContent="开始体检";
-    hint("体检失败："+e.message,true);
-  }
-};
+$("#reprobe").onclick=()=>window.AgentConnections.open({tab:"local"});
+$("#api-connections").onclick=()=>window.AgentConnections.open({tab:"api"});
+window.addEventListener("agent-connections-changed",()=>renderAll());
 $("#save-budget").onclick=async()=>{
   try{
     const b=parseFloat($("#budget").value);
     if(!isFinite(b)||b<0)throw new Error("金额必须是 ≥0 的数字");
     await post("/settings/config",{budget:b});
     hint("护栏金额已保存为 $"+b+"（下次运行生效）");
-  }catch(e){hint("保存失败："+e.message,true)}
-};
-$("#save-keys").onclick=async()=>{
-  try{
-    const body={};
-    const ds=$("#ds-key").value.trim(),or=$("#or-key").value.trim();
-    if(ds)body.deepseek=ds;
-    if(or)body.openrouter=or;
-    if(!ds&&!or){hint("两个输入框都空着，没有改动");return;}
-    await post("/settings/credentials",body);
-    $("#ds-key").value="";$("#or-key").value="";
-    hint("密钥已保存到本机（不会联网、不会回显）");
-    await renderAll();
   }catch(e){hint("保存失败："+e.message,true)}
 };
 $("#demo-btn").onclick=async()=>{
@@ -765,11 +703,6 @@ $("#search-input").addEventListener("keydown",e=>{
 $("#search-clear").onclick=clearSearch;
 $("#sch-freq").onchange=syncFreqUI;
 syncFreqUI();
-$("#sch-goal-tpl").onchange=()=>{
-  const id=$("#sch-goal-tpl").value;if(!id)return;
-  const t=(INFO.templates||[]).find(x=>x.id===id);
-  if(t)$("#sch-goal").value=t.text;
-};
 $("#save-schedule").onclick=async()=>{
   try{
     const name=$("#sch-name").value.trim();
@@ -790,14 +723,27 @@ $("#proj-switch-new").onclick=()=>{
   if(!/^[A-Za-z0-9_-]{1,64}$/.test(name)){
     hint("项目名只能是字母/数字/-/_，最多 64 字符",true);return;
   }
-  doSwitchProject(name);
+  return doSwitchProject(name);
 };
 
+
+SettingsNavigation.init({general:['card-project','card-workdir','card-schedule'],agents:['card-agents','card-preflight','card-demo'],api:['card-api-connections'],permissions:['card-tools'],usage:['card-budget','card-trends'],history:['card-runs'],data:['card-backup'],about:['card-about','card-quit']});
+$("#bk-export").onclick=()=>AsyncUI.run($("#bk-export"),"正在生成 ZIP…",async()=>{
+ let url;try{const run=$("#bk-run").value;if(!run)throw new Error('请选择运行');const response=await fetch('/export?run='+encodeURIComponent(run));if(!response.ok)throw new Error('导出失败 '+response.status);url=URL.createObjectURL(await response.blob());const link=document.createElement('a');link.href=url;link.download='agent-hub-'+run+'.zip';document.body.append(link);link.click();link.remove();hint('已导出运行交付物')}catch(e){hint(e.message,true)}finally{if(url)URL.revokeObjectURL(url)}
+});
+for(const id of ['bk-copy-runtime','bk-copy-creds','bk-copy-datadir']){const button=document.getElementById(id),handler=button.onclick;button.onclick=()=>AsyncUI.run(button,'正在复制…',handler).catch(e=>hint('复制失败：'+e.message,true))}
+for(const [id,label] of Object.entries({'wk-pick':'等待选择文件夹…','wk-save':'正在保存工作区…','wk-reset':'正在恢复…','wk-reveal':'正在打开…','save-budget':'正在保存预算…','demo-btn':'正在启动演示…','save-schedule':'正在保存定时目标…','proj-switch-new':'正在切换项目…','search-btn':'正在搜索…','quit-btn':'正在退出…'})){
+ const button=document.getElementById(id),handler=button.onclick;button.onclick=e=>AsyncUI.run(button,label,()=>handler(e));
+}
+
 try{const t=localStorage.getItem("ah_theme");if(t)setTheme(t);}catch(_){}
+$("#agents").classList.add("ah-skeleton");
+$("#meta").textContent="正在读取设置…";
 renderAll().catch(e=>{
   hint("连不上 serve.py —— 用 python3 serve.py 启动，或从 dashboard 顶部“设置”进入",true);
   $("#agents").innerHTML='<div class="note">需要 serve.py 在跑才能读到设置。</div>';
-});
+}).finally(()=>$("#agents").classList.remove("ah-skeleton"));
 </script>
+<script src="assets/connections.js"></script>
 </body>
 </html>

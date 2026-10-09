@@ -75,6 +75,7 @@ import math
 import mimetypes
 import os
 import re
+import hashlib
 import shutil
 import signal
 import subprocess
@@ -88,12 +89,24 @@ from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 
 import yaml
 
-from hub import atomicio, conversation, manager, sessions
+from hub import atomicio, checkpoints, conversation, manager, run_changes, sessions
 from hub.blackboard import Blackboard
 from hub.executors import _codex_cmd, _dsh_cmd, _resolve_codebuddy_paths
 from hub.models import EventBus, Task, TaskType
 from hub.executors import _which as _cli_which
 from hub.router import Router
+from hub.agent_options import normalize_options, selection_capabilities, validate_effort
+from hub.local_discovery import discover_local
+from hub.local_agent_metadata import inspect_agent, installation_fingerprint
+from hub.local_model_probe import run_model_probe, public_probe_result, USAGE_KEYS as PROBE_USAGE_KEYS
+from hub.workdir_picker import pick_workdir
+from hub.local_agents import KINDS as LOCAL_KINDS, LABELS as LOCAL_LABELS, PATH_FIELDS
+from hub.local_agents import validate_local_settings, apply_local_policy, configured_paths
+from hub.api_connections import project_api_connections, propose_legacy_api_migration, validate_connections, public_connection
+from hub.connection_store import ConnectionStore
+from hub.goal_queue import GoalStore, GoalConflict, GoalDataError, validate_context, TERMINAL as GOAL_TERMINAL
+from hub.api_budget import PaidLedger, BudgetedApiExecutor, board_budget_path
+from hub.api_executor import ApiExecutor
 
 VERSION = "0.2.0"
 MAIN_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "main.py")
@@ -132,6 +145,7 @@ _PROJECT_NAME_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 # Judgment call (no measured basis): cap for one git-diff response body,
 # same "prevent runaway" family as MAX_PREVIEW_BYTES/MAX_EXPORT_BYTES.
 MAX_DIFF_CHARS = 200_000
+CHECKPOINT_KEEP_RUNS = 50   # 保留期：各检查点库只留最近这么多次运行（change-safety-net.md §5.3）
 COMMIT = ""
 
 _current: subprocess.Popen | None = None
@@ -176,6 +190,11 @@ _sessions: dict[str, dict] = {}   # sid -> history/questions/awaiting_confirmati
 _active_sid = ""
 _chat_lock = threading.RLock()
 _chat_inflight: set[str] = set()
+_goal_stop = None  # Only the real entry point creates a background worker.
+
+
+def _goals_stopping():
+    return _goal_stop is not None and _goal_stop.is_set()
 
 
 
@@ -206,7 +225,16 @@ _validate_session_questions = sessions.validate_questions
 _validate_session_history = sessions.validate_history
 _validate_session_data = sessions.validate_session_data
 _session_stage = sessions.stage
-_session_public = sessions.public
+def _session_public(sess, pending=False):
+    result = sessions.public(sess, pending)
+    try:
+        paid = PaidLedger(2.0, path=_session_budget_path(sess['session_id'])).snapshot()
+        result['cost_complete'] = not paid['unknown']
+        result['paid_api_cost_usd'] = paid['spent_usd']
+        result['cost_usd'] = max(result.get('cost_usd', 0), paid['spent_usd'])
+    except ValueError:
+        result['cost_complete'] = False
+    return result
 
 
 # 这四个要带上 SESSIONS_DIR。它是 _configure() 每次重设的模块级路径，
@@ -238,6 +266,46 @@ def _session_load_disk(sid: str) -> dict | None:
 _task_locks: dict[str, threading.Lock] = {}
 _task_locks_guard = threading.Lock()
 _gate_reply_lock = threading.Lock()
+_settings_lock = threading.RLock()
+_connection_inflight = 0
+_inspection_locks = {kind: threading.Lock() for kind in LOCAL_KINDS}
+_workdir_picker_lock = threading.Lock()
+
+def _settings_locked(handler):
+    def locked(self, body):
+        with _settings_lock:
+            # Every metadata read-modify-write participates, not just API CRUD.
+            # API CRUD owns the same locks inside ConnectionStore itself.
+            transaction = (_api_store().locked() if CONFIG_PATH and CREDENTIALS_PATH and
+                           handler.__name__ != '_handle_save_api_connection' else contextlib.nullcontext())
+            try:
+                transaction.__enter__()
+            except ValueError:
+                self._reply(409, {'error': '配置正在保存，请稍后重试'})
+                return
+            except OSError:
+                self._reply(500, {'error': '无法锁定配置，请检查数据目录权限'})
+                return
+            try:
+                return handler(self, body)
+            finally:
+                transaction.__exit__(None, None, None)
+    return locked
+
+
+@contextlib.contextmanager
+def _connection_call():
+    """Prevent settings edits during a real follow-up/preflight request."""
+    global _connection_inflight
+    with _settings_lock:
+        if _connection_inflight or _goal_owner():
+            raise InspectionConflict('另一个连接测试或追问正在进行，请稍后重试')
+        _connection_inflight += 1
+    try:
+        yield
+    finally:
+        with _settings_lock:
+            _connection_inflight -= 1
 
 
 def _lock_for_task(task_id: str) -> threading.Lock:
@@ -263,28 +331,57 @@ def _lock_for_task(task_id: str) -> threading.Lock:
 #                      delete), so one side's write can't be silently
 #                      clobbered by the other's (a lost last_fired_date
 #                      update would let a daily goal fire twice).
+#   _runs_lock:        the run index is written by the watchdog thread (a run
+#                      ended) and by request threads (a run started): both
+#                      used one temp file, and a stale snapshot could land
+#                      last and lose the other's update (B34).
+#   _checkpoint_lock:  serve.py's own work on a checkpoint store -- a writing
+#                      follow-up, rollback/undo, the watchdog's closing
+#                      snapshot, retention -- takes turns, and no engine may
+#                      start meanwhile: the engine and serve.py must never
+#                      snapshot one store at the same time
+#                      (docs/decisions/change-safety-net.md §5.3).
+#                      Known exception: in the milliseconds between the engine
+#                      exiting and its watchdog taking this lock, a new spawn or
+#                      writing follow-up can get through. The watchdog then waits
+#                      for the whole follow-up before recording how the run ended.
+#                      Only cancelled or crashed runs are affected; a failed
+#                      closing snapshot is recorded as that segment's error.
 _spawn_lock = threading.Lock()
 _schedules_lock = threading.Lock()
+_runs_lock = threading.RLock()
+_checkpoint_lock = threading.Lock()
 
 
-def _spawn_main_if_idle(argv_tail: list[str]) -> int | None:
+def _spawn_main_if_idle(argv_tail: list[str], context=None, owner_goal_id='') -> int | None:
     """Atomic check-and-spawn. Returns None (never spawns) if a run is
-    already busy at the moment the lock is held; propagates OSError from
-    _spawn_main unchanged (callers already handle that)."""
-    with _spawn_lock:
-        if _run_busy():
+    already busy -- or serve.py is in the middle of checkpoint work -- at
+    the moment the lock is held; propagates OSError from _spawn_main
+    unchanged (callers already handle that)."""
+    with _settings_lock, _spawn_lock:
+        if (_goals_stopping() or _chat_inflight or _goal_owner(owner_goal_id) or
+                _connection_inflight or _run_busy() or not _checkpoint_lock.acquire(blocking=False)):
             return None
-        return _spawn_main(argv_tail)
+        try:
+            return (_spawn_main(argv_tail) if context is None else
+                    _spawn_main(argv_tail, context=context, owner_goal_id=owner_goal_id))
+        finally:
+            _checkpoint_lock.release()
 
 
 def _spawn_manager_main_if_idle(
-        argv_tail: list[str]) -> tuple[int | None, str]:
+        argv_tail: list[str], context=None, owner_goal_id='') -> tuple[int | None, str]:
     """Spawn for manager confirmation and capture its run id atomically."""
-    with _spawn_lock:
-        if _run_busy():
+    with _settings_lock, _spawn_lock:
+        if (_goals_stopping() or _goal_owner(owner_goal_id) or _connection_inflight or
+                _run_busy() or not _checkpoint_lock.acquire(blocking=False)):
             return None, ""
-        pid = _spawn_main(argv_tail)
-        return pid, str(_run_meta.get("id") or "")
+        try:
+            pid = (_spawn_main(argv_tail) if context is None else
+                   _spawn_main(argv_tail, context=context, owner_goal_id=owner_goal_id))
+            return pid, str(_run_meta.get("id") or "")
+        finally:
+            _checkpoint_lock.release()
 
 
 # ---------- desktop configuration ----------
@@ -496,11 +593,24 @@ def _reconcile_manager_sessions(now: float | None = None) -> None:
         print(f"[manager-session] active pointer kept for diagnosis: {exc}")
 
 
-def _session_router(sess: dict):
+def _session_router(sess: dict, context=None):
     """Lazily restore the runtime-only router after a process restart."""
     router = sess.get("router")
-    if router is None:
-        router = Router(MATRIX, workdir=WORKDIR)
+    with _settings_lock:
+        stat = os.stat(MATRIX)
+        workdir = WORKDIR if context is None else context['workdir']
+        signature = (MATRIX, stat.st_mtime_ns, stat.st_size, workdir)
+    cached_signature = getattr(router, '_ui_matrix_signature', signature)
+    if router is None or cached_signature != signature:
+        circuits = router.circuit_open() if router is not None else set()
+        router = Router(MATRIX, workdir=workdir)
+        if CONFIG_PATH and callable(getattr(router, 'bind_api_store', None)):
+            router.bind_api_store(_api_store())
+            router.bind_paid_ledger(PaidLedger(router.budget.get('max_usd_per_run', 2.0),
+                                              path=_session_budget_path(sess['session_id']) if sess.get('session_id') else ''))
+        router._ui_matrix_signature = signature
+        for name in circuits.intersection(router.all_agents()):
+            router.open_circuit(name)
         sess["router"] = router
     return router
 
@@ -739,22 +849,52 @@ def _runs_load() -> None:
 def _runs_save() -> None:
     if not INDEX_PATH:
         return
-    _atomic_write(INDEX_PATH,
-                  "".join(json.dumps(e, ensure_ascii=False) + "\n" for e in _runs))
+    with _runs_lock:
+        _atomic_write(INDEX_PATH,
+                      "".join(json.dumps(e, ensure_ascii=False) + "\n" for e in _runs))
 
 
-def _runs_add(run_id: str, goal: str) -> None:
-    _runs.append({"run_id": run_id, "ts": round(time.time(), 3), "goal": goal,
-                  "status": "running", "cost_usd": 0.0})
-    _runs_save()
+def _runs_add(run_id: str, goal: str, mock: bool = False) -> None:
+    entry = {"run_id": run_id, "ts": round(time.time(), 3), "goal": goal,
+             "status": "running", "cost_usd": 0.0}
+    if mock:
+        entry["mock"] = True    # /rerun must re-pass --mock, even after a restart
+    with _runs_lock:
+        _runs.append(entry)
+        _runs_save()
 
 
 def _runs_update(run_id: str, **fields) -> None:
-    for e in _runs:
-        if e.get("run_id") == run_id:
-            e.update(fields)
-            _runs_save()
-            return
+    with _runs_lock:
+        for e in _runs:
+            if e.get("run_id") == run_id:
+                e.update(fields)
+                _runs_save()
+                return
+
+
+def _prune_checkpoints() -> None:
+    """保留期（change-safety-net.md §5.3）：每开一次新运行，各检查点库只留最近
+    CHECKPOINT_KEEP_RUNS 次运行的 ref，其余交给 git gc --auto 回收。调用方持有
+    _checkpoint_lock。清理失败只是多占点磁盘，不能挡住新运行。"""
+    root = os.path.join(RUNTIME_DIR, "checkpoints")
+    if not RUNTIME_DIR or not os.path.isdir(root):
+        return
+    with _runs_lock:
+        keep = [e.get("run_id") for e in _runs[-CHECKPOINT_KEEP_RUNS:]]
+    try:
+        names = sorted(os.listdir(root))
+    except OSError as e:
+        # 检查点文件夹本身读不了（没权限、刚被删）：这次不清理，不能挡住新运行
+        print(f"checkpoint retention skipped, cannot list {root}: {e}", file=sys.stderr)
+        return
+    for name in names:
+        if name.endswith(".git"):
+            try:
+                checkpoints.prune(os.path.join(root, name), keep)
+            except Exception as e:
+                # 哪个库出什么错都只跳过它、接着清下一个：清理不能挡住新运行
+                print(f"checkpoint retention skipped for {name}: {e}", file=sys.stderr)
 
 
 def _adopt_latest_run() -> None:
@@ -827,18 +967,24 @@ def _credentials_load() -> None:
 def _credentials_write(updates: dict) -> None:
     if not CREDENTIALS_PATH:
         raise RuntimeError("credentials unavailable in legacy mode")
-    data = _credentials_read()
+    from hub.connection_store import file_lock, read_mapping, secure_write
+    with file_lock(CREDENTIALS_PATH):
+        data = read_mapping(CREDENTIALS_PATH)
+        for k, v in updates.items():
+            if k not in _CREDENTIAL_KEYS:
+                continue
+            v = str(v or "")
+            if v:
+                data[k] = v
+            else:
+                data.pop(k, None)
+        secure_write(CREDENTIALS_PATH, data)
     for k, v in updates.items():
-        if k not in _CREDENTIAL_KEYS:
-            continue
-        v = str(v or "")
-        if v:
-            data[k] = v
-            os.environ[k] = v   # sync NOW: the next _spawn_main inherits it
-        else:
-            data.pop(k, None)
-    _atomic_write(CREDENTIALS_PATH, yaml.safe_dump(data, allow_unicode=True),
-                  mode=0o600)
+        if k in _CREDENTIAL_KEYS:
+            if v:
+                os.environ[k] = str(v)
+            else:
+                os.environ.pop(k, None)
 
 
 # ---------- user overrides: config.yaml + merged matrix (brief 1.4) ----------
@@ -871,7 +1017,9 @@ def _matrix_patch(cfg: dict | None = None) -> dict:
     return patch if isinstance(patch, dict) else {}
 
 
-UI_PREF_DEFAULTS = {"manager_agent": "", "assign_mode": "auto", "gate_mode": "auto"}
+UI_PREF_DEFAULTS = {"manager_agent": "", "manager_model": "", "manager_effort": "",
+                    "manager_model_mode": "inherit", "manager_effort_mode": "inherit",
+                    "assign_mode": "auto", "gate_mode": "auto"}
 _ASSIGN_MODES = ("auto", "manual")
 _GATE_MODES = ("auto", "ask")
 
@@ -899,25 +1047,96 @@ def _ui_prefs() -> dict:
     return out
 
 
-def _gate_argv(force_auto: bool = False) -> list[str]:
+def _goal_prefs(raw):
+    if not isinstance(raw, dict) or not set(raw) <= set(UI_PREF_DEFAULTS):
+        raise ValueError('目标偏好格式无效')
+    prefs = dict(UI_PREF_DEFAULTS)
+    for key, value in raw.items():
+        if not isinstance(value, str) or len(value) > 200:
+            raise ValueError('目标偏好格式无效')
+        prefs[key] = value
+    for key, choices in (('assign_mode', _ASSIGN_MODES), ('gate_mode', _GATE_MODES),
+                         ('manager_model_mode', ('inherit', 'runtime', 'explicit')),
+                         ('manager_effort_mode', ('inherit', 'default', 'explicit'))):
+        if prefs[key] not in choices:
+            raise ValueError('目标偏好选项无效')
+    return prefs
+
+
+def _goal_binding():
+    cfg = _strict_config()
+    # Hash effective policy, including connection revisions, never credential bytes.
+    with open(MATRIX, 'rb') as handle:
+        matrix_digest = hashlib.sha256(handle.read()).hexdigest()
+    policy = {key: cfg.get(key) for key in ('local_agents', 'api_connections', 'budget', 'matrix_patch')}
+    return hashlib.sha256(json.dumps([matrix_digest, policy], sort_keys=True,
+                                    ensure_ascii=False).encode('utf-8')).hexdigest()
+
+
+def _capture_goal_context(workdir, prefs):
+    if not isinstance(workdir, str) or not os.path.isabs(workdir) or not os.path.isdir(workdir):
+        raise ValueError('请选择存在的绝对工作区路径')
+    with _settings_lock:
+        context = {'workdir': os.path.realpath(workdir), 'prefs': _goal_prefs(prefs),
+                   'binding': _goal_binding()}
+        _validate_goal_context(context)
+    return context
+
+
+def _validate_goal_context(context):
+    validate_context(context)
+    if not os.path.isdir(context['workdir']):
+        raise ValueError('目标工作区已不存在，请选择工作区后重试')
+    if context['binding'] != _goal_binding():
+        raise ValueError('接入或配置已变化，请使用当前设置重试')
+    prefs = _goal_prefs(context['prefs'])
+    name = prefs['manager_agent']
+    agents = _load_yaml_dict(MATRIX).get('agents', {})
+    if name and name not in agents:
+        raise ValueError('所选经理已不存在')
+    if CONFIG_PATH:
+        error = _connection_start_error()
+        if error:
+            raise ValueError(error)
+        if name:
+            spec = agents[name]
+            kind = spec.get('kind')
+            cfg = _strict_config()
+            if kind in LOCAL_KINDS:
+                local = validate_local_settings(cfg.get('local_agents', {}), sys.platform)
+                if not local['confirmed'] or not local['agents'][kind]['enabled']:
+                    raise ValueError('所选 Agent 未接入或已停用')
+            elif kind == 'api':
+                conn = spec.get('connection') or {}
+                if (not spec.get('enabled') or not conn.get('enabled') or
+                        not _api_store().has_secret(conn.get('credential_ref', ''))):
+                    raise ValueError('所选连接已停用')
+
+
+def _gate_argv(force_auto: bool = False, prefs=None) -> list[str]:
     """Return gate policy in argparse-safe ``--flag=value`` form.
 
     Scheduled runs force both values to auto: manual assignment alone also
     opens the plan gate and would otherwise block an unattended schedule.
     """
     prefs = ({"gate_mode": "auto", "assign_mode": "auto"}
-             if force_auto else _ui_prefs())
+             if force_auto else (prefs if prefs is not None else _ui_prefs()))
     return [f"--gate-mode={prefs['gate_mode']}",
             f"--assign-mode={prefs['assign_mode']}"]
 
 
-def _apply_manager_pref(router) -> str:
+def _apply_manager_pref(router, prefs=None) -> str:
     """Apply the current manager pin to an existing chat-session router.
 
     Save the original route on first use so changing the preference back to
     automatic during a conversation restores the full fallback chain.
     """
-    name = _ui_prefs()["manager_agent"]
+    name = (prefs if prefs is not None else _ui_prefs())["manager_agent"]
+    if name and callable(getattr(router, 'require_agent_enabled', None)):
+        try:
+            router.require_agent_enabled(name)
+        except KeyError:
+            raise ValueError('固定经理的连接已删除，请重新选择经理') from None
     routes = getattr(router, "routes", None)
     if not isinstance(routes, dict):
         # Some embedders/tests provide a minimal Router-compatible object
@@ -930,6 +1149,20 @@ def _apply_manager_pref(router) -> str:
         router._ui_base_manager_route = base_route
     routes["manager"] = [name] if name else list(base_route)
     return name
+
+def _manager_execution_options(prefs: dict) -> dict:
+    if not prefs.get('manager_agent'):
+        return {}
+    options = {}
+    if prefs.get('manager_model_mode') == 'runtime':
+        options['model'] = ''
+    elif prefs.get('manager_model_mode') == 'explicit':
+        options['model'] = prefs.get('manager_model', '')
+    if prefs.get('manager_effort_mode') == 'default':
+        options['effort'] = ''
+    elif prefs.get('manager_effort_mode') == 'explicit':
+        options['effort'] = prefs.get('manager_effort', '')
+    return options
 
 
 def _load_config() -> dict:
@@ -946,6 +1179,286 @@ def _load_config() -> dict:
 def _save_config(cfg: dict) -> None:
     _atomic_write(CONFIG_PATH, yaml.safe_dump(cfg, allow_unicode=True, sort_keys=False),
                   mode=0o600)
+
+
+def _strict_config() -> dict:
+    """Consent writes must never replace an unreadable configuration with defaults."""
+    if not CONFIG_PATH or not os.path.exists(CONFIG_PATH):
+        return {}
+    try:
+        with open(CONFIG_PATH, encoding='utf-8') as handle:
+            cfg = yaml.safe_load(handle)
+    except (OSError, yaml.YAMLError) as exc:
+        raise ValueError('配置文件无法读取，请修复后重试') from exc
+    if not isinstance(cfg, dict):
+        raise ValueError('配置文件必须是对象，请修复后重试')
+    return cfg
+
+
+def _connection_start_error() -> str:
+    if not CONFIG_PATH:
+        return ''  # Legacy CLI/dev mode retains its explicit matrix behavior.
+    try:
+        cfg = _strict_config()
+        local = validate_local_settings(cfg.get('local_agents', {}), sys.platform)
+        api = validate_connections(cfg.get('api_connections'))['items']
+        if any(c['enabled'] and _api_store().has_secret(c.get('credential_ref', '')) for c in api.values()):
+            return ''
+        if _credentials_read().get('DEEPSEEK_API_KEY') or os.environ.get('DEEPSEEK_API_KEY'):
+            return ''
+        if local['confirmed'] and any(a['enabled'] for a in local['agents'].values()):
+            return ''
+        return '请先接入并启用至少一个 Agent，再开始工作'
+    except (ValueError, AttributeError):
+        return '接入配置无法读取，请修复后重试'
+
+
+def _local_agent_snapshot(refresh=False, cfg=None) -> dict:
+    cfg = _strict_config() if cfg is None else cfg
+    settings = validate_local_settings(cfg.get('local_agents', {}), sys.platform)
+    cache_path = os.path.join(RUNTIME_DIR, 'local-agent-discovery.json') if RUNTIME_DIR else ''
+    cached = {}
+    if cache_path and os.path.isfile(cache_path):
+        try:
+            with open(cache_path, encoding='utf-8') as handle:
+                saved = json.load(handle)
+            if isinstance(saved, dict) and saved.get('platform') == sys.platform:
+                cached = saved.get('agents', {})
+                if not isinstance(cached, dict):
+                    cached = {}
+        except (OSError, ValueError):
+            pass
+    if refresh:
+        matrix = _deep_merge(_load_yaml_dict(MATRIX_BASE), _matrix_patch(cfg))
+        for kind in LOCAL_KINDS:
+            paths = dict(settings['agents'][kind]['paths'])
+            paths.update(configured_paths(matrix, kind))
+            cached[kind] = discover_local(kind, paths)
+        if cache_path:
+            _atomic_write(cache_path, json.dumps({'platform': sys.platform, 'agents': cached},
+                                               ensure_ascii=False), mode=0o600)
+    rows = []
+    for kind in LOCAL_KINDS:
+        result = cached.get(kind) or {}
+        if not isinstance(result, dict):
+            result = {}
+        rows.append({**{k: result.get(k) for k in ('status', 'source', 'candidates', 'argv')},
+                     'id': kind, 'kind': kind, 'label': LOCAL_LABELS[kind],
+                     'available': result.get('status') == 'found',
+                     'enabled': settings['confirmed'] and settings['agents'][kind]['enabled'],
+                     'detail': result.get('detail') or '点击发现本机 Agent；账户与模型未验证',
+                     'verified': False,
+                     'inspection': _inspection_snapshot(kind, cfg)})
+    return {'settings': settings, 'agents': rows}
+
+
+class InspectionConflict(ValueError):
+    """The consent/configuration changed or does not authorize this query."""
+
+
+def _inspection_identity(kind, cfg):
+    if kind not in LOCAL_KINDS:
+        raise ValueError('不支持的本机 Agent')
+    local = validate_local_settings(cfg.get('local_agents', {}), sys.platform)
+    if not local['confirmed'] or not local['agents'][kind]['enabled']:
+        raise InspectionConflict('请先保存并启用此 Agent')
+    resolutions = cfg.get('local_agent_resolutions', {})
+    entry = resolutions.get(kind) if isinstance(resolutions, dict) else None
+    if not isinstance(entry, dict):
+        raise InspectionConflict('安装入口未确认，请重新探测并保存')
+    argv = [entry.get(field) for field in PATH_FIELDS[kind]]
+    if not all(isinstance(p, str) and p for p in argv):
+        raise InspectionConflict('安装入口未确认，请重新探测并保存')
+    revision = local['revision']
+    matrix = _deep_merge(_load_yaml_dict(MATRIX_BASE), _matrix_patch(cfg))
+    profiles = {name: spec for name, spec in matrix.get('agents', {}).items()
+                if isinstance(spec, dict) and spec.get('kind') == kind}
+    fingerprint = hashlib.sha256(json.dumps([
+        installation_fingerprint(kind, argv, revision), profiles],
+        sort_keys=True, ensure_ascii=False).encode('utf-8')).hexdigest()
+    return argv, revision, fingerprint, profiles
+
+
+def _inspection_cache():
+    path = os.path.join(RUNTIME_DIR, 'local-agent-metadata.json')
+    try:
+        if os.path.getsize(path) > 4 * 1024 * 1024:
+            return {}
+        with open(path, encoding='utf-8') as handle:
+            data = json.load(handle)
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _public_inspection_fields(data, kind):
+    """Project both cached and newly collected metadata; never relay raw keys."""
+    if not isinstance(data, dict):
+        return {}
+    out = {}
+    timestamp = data.get('checked_at')
+    if type(timestamp) in (int, float) and math.isfinite(timestamp):
+        out['checked_at'] = timestamp
+    if data.get('installation') in ('found', 'unchecked', 'error', 'missing'):
+        out['installation'] = data['installation']
+    auth = data.get('auth')
+    if isinstance(auth, dict) and auth.get('status') in ('logged_in', 'not_logged_in', 'unsupported', 'error'):
+        detail = {'logged_in': '', 'not_logged_in': '请在原 Agent 中登录',
+                  'unsupported': '工具暂未提供可验证的登录状态', 'error': '状态检查失败或超时，请重试'}
+        out['auth'] = {'status': auth['status'], 'detail': detail[auth['status']]}
+    catalog = data.get('catalog')
+    if isinstance(catalog, dict) and catalog.get('status') in ('ready', 'unsupported', 'error'):
+        rows = []
+        try:
+            raw = catalog.get('models', [])
+            if not isinstance(raw, list) or len(raw) > 10000:
+                raise ValueError('Invalid cached models')
+            for row in raw:
+                if not isinstance(row, dict):
+                    raise ValueError('Invalid cached model')
+                model = normalize_options(kind, {'model': row.get('id')})['model']
+                name = row.get('name', model)
+                if not model or not isinstance(name, str) or len(name) > 500:
+                    raise ValueError('Invalid cached model')
+                levels = row.get('effort_levels', [])
+                if not isinstance(levels, list) or len(levels) > 100 or any(
+                        not isinstance(e, str) or not re.fullmatch(r'[A-Za-z][A-Za-z0-9_-]{0,31}', e) for e in levels):
+                    raise ValueError('Invalid cached effort')
+                rows.append({'id': model, 'name': name, 'is_default': row.get('is_default') is True,
+                             'hidden': row.get('hidden') is True, 'effort_levels': levels,
+                             'default_effort': row.get('default_effort') if row.get('default_effort') in levels else None})
+            stamp = catalog.get('read_at')
+            out['catalog'] = {'status': catalog['status'], 'models': rows,
+                              'stale': catalog.get('stale') is True,
+                              'source': kind + (':model/list' if kind == 'codex' else ':acp/session/new')
+                              if catalog['status'] == 'ready' else '',
+                              'read_at': stamp if type(stamp) in (int, float) and math.isfinite(stamp) else None}
+        except (ValueError, TypeError):
+            out['catalog'] = {'status': 'error', 'source': '', 'read_at': None, 'models': []}
+    tests = data.get('tests', {})
+    out['tests'] = {}
+    if isinstance(tests, dict):
+        for key, value in tests.items():
+            if not isinstance(value, dict) or value.get('status') not in ('passed', 'failed', 'expired'):
+                continue
+            try:
+                identity = json.loads(key)
+                if not isinstance(identity, list) or len(identity) != 2 or identity[0] not in (
+                        'catalog', 'configured', 'manual', 'runtime_default'):
+                    continue
+                normalize_options(kind, {'model': identity[1]})
+            except (ValueError, TypeError):
+                continue
+            record = {'status': value['status']}
+            for field in ('tested_at', 'cost_usd', 'cost_credits'):
+                number = value.get(field)
+                if type(number) in (int, float) and math.isfinite(number) and number >= 0:
+                    record[field] = number
+            record['cost_status'] = value.get('cost_status') if value.get('cost_status') in (
+                'reported', 'unknown', 'subscription', 'estimated') else 'unknown'
+            usage = value.get('usage', {})
+            record['usage'] = {k: v for k, v in usage.items() if k in PROBE_USAGE_KEYS
+                and type(v) in (int, float) and math.isfinite(v) and v >= 0} if isinstance(usage, dict) else {}
+            if value['status'] == 'failed':
+                safe = ('当前自定义工具或认证配置无法安全关闭，请在原 Agent 中测试',
+                        '工具版本未提供安全测试所需选项，请在原 Agent 中测试',
+                        '模型测试失败或超时，请重试', '实际返回的模型与所选模型不同，未标记通过')
+                record['error'] = value.get('error') if value.get('error') in safe else '调用失败，请检查账号、模型配置或稍后重试'
+            out['tests'][json.dumps(identity, separators=(',', ':'))] = record
+    # Concrete source labels describe provenance, not different model calls.
+    latest = {}
+    for key, record in out['tests'].items():
+        source, model = json.loads(key)
+        if source == 'runtime_default':
+            continue
+        rank = (record.get('tested_at', 0), {'passed': 0, 'expired': 1, 'failed': 2}[record['status']])
+        previous = latest.get(model)
+        if previous is None or rank > previous[0]:
+            latest[model] = (rank, record)
+    for model, (_, record) in latest.items():
+        for source in ('catalog', 'configured', 'manual'):
+            out['tests'][json.dumps([source, model], separators=(',', ':'))] = dict(record)
+    return out
+
+
+def _inspection_snapshot(kind, cfg):
+    empty = {'kind': kind, 'revision': 0, 'fingerprint': '', 'checked_at': None,
+             'installation': 'unchecked',
+             'auth': {'status': 'unsupported', 'detail': '尚未检查登录状态'},
+             'catalog': {'status': 'unsupported', 'source': '', 'read_at': None, 'models': []},
+             'configured_models': [], 'tests': {}}
+    try:
+        _, revision, fingerprint, profiles = _inspection_identity(kind, cfg)
+    except (ValueError, TypeError):
+        return empty
+    empty.update(revision=revision, fingerprint=fingerprint)
+    configured = []
+    for spec in profiles.values():
+        model = spec.get('model')
+        if isinstance(model, str) and model and model not in configured:
+            configured.append(model)
+    empty['configured_models'] = configured
+    saved = _inspection_cache().get(kind)
+    if isinstance(saved, dict) and saved.get('fingerprint') == fingerprint:
+        # Only our public schema is served, never arbitrary cached fields.
+        empty.update(_public_inspection_fields(saved, kind))
+    elif isinstance(saved, dict):
+        empty['tests'] = _public_inspection_fields(saved, kind).get('tests', {})
+        for record in empty['tests'].values():
+            record['status'] = 'expired'
+    return empty
+
+
+def _inspect_local_agent(kind, revision):
+    if kind not in LOCAL_KINDS or type(revision) is not int:
+        raise ValueError('请提供正确的 Agent 和配置版本')
+    lock = _inspection_locks[kind]
+    if not lock.acquire(blocking=False):
+        raise InspectionConflict('此 Agent 正在检查，请稍后重试')
+    try:
+        with _settings_lock:
+            cfg = _strict_config()
+            argv, current, fingerprint, _ = _inspection_identity(kind, cfg)
+            if revision != current:
+                raise InspectionConflict('配置已更新，请刷新后重试')
+            previous = _inspection_snapshot(kind, cfg)
+        result = inspect_agent(kind, argv)
+        with _settings_lock:
+            cfg = _strict_config()
+            _, current, now_fingerprint, _ = _inspection_identity(kind, cfg)
+            if revision != current or fingerprint != now_fingerprint:
+                raise InspectionConflict('配置已更新，请刷新后重试')
+            snapshot = _inspection_snapshot(kind, cfg)
+            fields = _public_inspection_fields(result, kind)
+            fields.pop('tests', None)
+            if fields.get('catalog', {}).get('status') == 'error' and previous['catalog'].get('status') == 'ready':
+                fields['catalog'] = {**previous['catalog'], 'stale': True}
+            snapshot.update(fields)
+            if previous['auth'].get('status') != snapshot['auth'].get('status'):
+                snapshot['tests'] = {}
+            cache = _inspection_cache()
+            cache[kind] = snapshot
+            _atomic_write(os.path.join(RUNTIME_DIR, 'local-agent-metadata.json'),
+                          json.dumps(cache, ensure_ascii=False), mode=0o600)
+            return snapshot
+    finally:
+        lock.release()
+
+
+def _cached_local_agents() -> list[dict]:
+    """Opening a page must not initiate machine discovery."""
+    try:
+        rows = _local_agent_snapshot()['agents']
+    except (ValueError, OSError):
+        rows = [{'id': kind, 'label': LOCAL_LABELS[kind], 'available': False,
+                 'enabled': False, 'detail': '接入配置不可读，请检查设置'}
+                for kind in LOCAL_KINDS]
+    # Preserve support-tool metadata without scanning the three agent installations.
+    for kind, label in (('dsh', 'DeepSeek Harness (dsh)'), ('git', 'git（改动检查点）')):
+        path = _cli_which(kind)
+        rows.append({'id': kind, 'kind': kind, 'label': label,
+                     'available': bool(path), 'detail': path or '尚未找到程序'})
+    return rows
 
 
 def _json_list_load(path: str) -> list[dict]:
@@ -1118,11 +1631,119 @@ def _write_merged_matrix() -> str:
     merged = _deep_merge(base, patch)
     if not isinstance(merged, dict):
         return MATRIX   # unreachable today; belt-and-braces before we persist
+    try:
+        strict = _strict_config()
+        consent = strict.get('local_agents', {})
+        connections = strict.get('api_connections', {})
+        merged = project_api_connections(merged, connections)
+        merged = apply_local_policy(merged, consent, sys.platform)
+        if merged['local_agent_policy']['confirmed']:
+            resolved = strict.get('local_agent_resolutions', {})
+            if not isinstance(resolved, dict):
+                raise ValueError('本机执行入口格式无效')
+            for spec in merged['agents'].values():
+                kind = spec.get('kind')
+                if kind in LOCAL_KINDS and kind in resolved:
+                    paths = resolved[kind]
+                    if not isinstance(paths, dict) or set(paths) != set(PATH_FIELDS[kind]) or not all(isinstance(p,str) and p for p in paths.values()):
+                        raise ValueError('本机执行入口格式无效')
+                    for key, field in PATH_FIELDS[kind].items():
+                        spec[field] = paths[key]
+        # Explicit legacy DSH configuration remains independent of local CLI consent.
+        if (_credentials_read().get('DEEPSEEK_API_KEY') or os.environ.get('DEEPSEEK_API_KEY')):
+            merged['local_agent_policy']['external_enabled_kinds'] = ['dsh']
+    except ValueError:
+        # Preserve broken source config but close consent in the derived matrix.
+        merged = apply_local_policy(merged, {}, sys.platform)
+        merged['local_agent_policy']['config_error'] = True
     _atomic_write(MERGED_MATRIX_PATH,
                   yaml.safe_dump(merged, allow_unicode=True, sort_keys=False),
                   mode=0o600)
     MATRIX = MERGED_MATRIX_PATH
     return MATRIX
+
+
+def _api_store():
+    if not CONFIG_PATH or not CREDENTIALS_PATH:
+        raise ValueError('API 连接需要项目数据目录')
+    return ConnectionStore(CONFIG_PATH, CREDENTIALS_PATH)
+
+
+def _session_budget_path(sid):
+    return os.path.join(SESSIONS_DIR, _validate_session_id(sid) + '.api-budget.json') if SESSIONS_DIR else ''
+
+
+def _manager_budget_argv(sid):
+    path = _session_budget_path(sid)
+    return ['--paid-budget-source=' + path] if path and os.path.isfile(path) else []
+
+
+def _paid_complete(router):
+    ledger = getattr(router, 'paid_ledger', None)
+    return not ledger.snapshot()['unknown'] if ledger else True
+
+
+def _board_events_path(board):
+    return (EVENTS_PATH if os.path.abspath(board.path) == os.path.abspath(BOARD_PATH)
+            else os.path.join(os.path.dirname(board.path), 'events.jsonl'))
+
+
+def _latest_api_cost(events_path):
+    latest = {}
+    if os.path.exists(events_path):
+        with open(events_path, encoding='utf8') as handle:
+            for line in handle:
+                try:
+                    event = json.loads(line)
+                except ValueError:
+                    continue
+                if event.get('type') in ('run_finished', 'api_cost_updated'):
+                    latest = event
+    return latest
+
+
+def _followup_paid_ledger(board, limit):
+    from hub.connection_store import file_lock
+    path = board_budget_path(board.path)
+    with file_lock(path):
+        latest = _latest_api_cost(_board_events_path(board)) if not os.path.exists(path) else {}
+        ledger = PaidLedger(limit, latest.get('paid_api_cost_usd', 0),
+                            latest.get('cost_complete') is False, path=path)
+        ledger.persist()
+        return ledger
+
+
+def _record_followup_api_cost(board, task_id, router):
+    ledger = getattr(router, 'paid_ledger', None)
+    if ledger is None or router.kind(board.get('tasks/' + task_id + '/agent') or '') != 'api':
+        return
+    from hub.connection_store import file_lock
+    events_path = _board_events_path(board)
+    # Serialize cumulative events with engine completion; a separate lock avoids
+    # waiting for in-flight model requests that hold the reservation lock.
+    with file_lock(ledger.path + '.events'):
+        paid = PaidLedger(ledger.limit_usd, path=ledger.path).snapshot()
+        latest = _latest_api_cost(events_path)
+        total = float(latest.get('total_cost_usd') or 0) + paid['spent_usd'] - float(latest.get('paid_api_cost_usd') or 0)
+        with contextlib.closing(EventBus(events_path)) as bus:
+            bus.emit('api_cost_updated', task_id=task_id, paid_api_cost_usd=paid['spent_usd'],
+                     total_cost_usd=max(0, total), cost_complete=not paid['unknown'])
+
+
+def _api_migration_proposal():
+    cfg = _strict_config()
+    matrix = _deep_merge(_load_yaml_dict(MATRIX_BASE), _matrix_patch(cfg))
+    presence = {'openrouter': bool(os.environ.get('OPENROUTER_API_KEY') or
+                                  _credentials_read().get('OPENROUTER_API_KEY'))}
+    proposal = propose_legacy_api_migration(matrix, presence, _matrix_patch(cfg))
+    existing = _api_store().raw_snapshot()['items']
+    for key in list(proposal['items']):
+        if key in existing:
+            del proposal['items'][key]
+    if not os.environ.get('OPENROUTER_API_KEY'):
+        for item in proposal['items'].values():
+            item['credential_ref'] = 'legacy/OPENROUTER_API_KEY'
+    return proposal
 
 
 # ---------- spawning + run watchdog ----------
@@ -1163,7 +1784,7 @@ def _engine_target_missing(argv_tail: list[str]) -> str:
             "确认 —— 重新说一遍目标即可。跟 agent 装没装无关，做体检看不出问题。")
 
 
-def _spawn_main(argv_tail: list[str]) -> int:
+def _spawn_main(argv_tail: list[str], context=None, owner_goal_id='') -> int:
     """Spawn the engine subprocess. The caller's tail is passed through
     verbatim (tests assert it exactly); machine-specific paths are added
     HERE. Legacy mode (no data dir): absolute main.py path only, unchanged
@@ -1172,6 +1793,12 @@ def _spawn_main(argv_tail: list[str]) -> int:
     (--resume) reuses the latest run's directory so its blackboard and
     event stream simply continue."""
     global _current, _run_meta, BOARD_PATH, EVENTS_PATH
+    if context is not None:
+        _validate_goal_context(context)
+    if '--mock' not in argv_tail:
+        connection_error = _connection_start_error()
+        if connection_error:
+            raise OSError(connection_error)
     # 先于 run 目录创建：拦住的这一次本来就跑不起来，不该在历史里留下
     # 一条空壳失败运行（MAIN_PATH 那条守卫在目录之后，因为那时已经有
     # run 可以承载 run_crashed；这里还没有，直接把原因交给调用方即可 ——
@@ -1187,6 +1814,8 @@ def _spawn_main(argv_tail: list[str]) -> int:
             run_dir = os.path.join(RUNS_DIR, _run_meta["id"])
         else:
             run_id = uuid.uuid4().hex[:8]
+            if owner_goal_id:
+                _goal_store().bind_run(owner_goal_id, run_id, time.time())
             run_dir = os.path.join(RUNS_DIR, run_id)
             os.makedirs(run_dir, exist_ok=True)
             BOARD_PATH = os.path.join(run_dir, "blackboard.jsonl")
@@ -1194,7 +1823,8 @@ def _spawn_main(argv_tail: list[str]) -> int:
             _run_meta = {"id": run_id, "board": BOARD_PATH,
                          "events": EVENTS_PATH, "proc": None,
                          "cancel_flag": {"cancel_requested": False}}
-            _runs_add(run_id, _tail_goal(argv_tail))
+            _runs_add(run_id, _tail_goal(argv_tail), mock="--mock" in argv_tail)
+            _prune_checkpoints()
     # MAIN_PATH 是 import 时用 __file__ 定死的绝对路径。进程一跑就是几周，
     # 期间仓库被挪走/改名的话它就指向一个不存在的文件 —— Python 的
     # 「can't open file」退出码 2，看门狗只能补一句「exited with code 2」，
@@ -1209,8 +1839,24 @@ def _spawn_main(argv_tail: list[str]) -> int:
         raise OSError(msg)
     argv = [sys.executable, MAIN_PATH, *argv_tail]
     if RUNS_DIR:
+        # 续跑沿用那次运行自己的工作目录（跟 B13 同理），一次运行的所有段就都
+        # 在同一个文件夹、同一个检查点库里（change-safety-net.md §3.2）
+        workdir = WORKDIR if context is None else context['workdir']
+        if resume:
+            try:
+                workdir = Blackboard(BOARD_PATH, on_write=None).get("run/workdir") or WORKDIR
+            except Exception as e:
+                # 黑板读不了（比如最后一行被截在 UTF-8 字符中间）：回到当前的工作目录，
+                # 也就是没有这个功能之前的行为。抛出去的话 /rerun 会丢连接（§6.8）
+                print(f"rerun: cannot read run/workdir from {BOARD_PATH}, "
+                      f"using {WORKDIR}: {e}", file=sys.stderr)
         argv += [f"--board={BOARD_PATH}", f"--events={EVENTS_PATH}",
-                 f"--workdir={WORKDIR}", f"--matrix={MATRIX}"]
+                 f"--workdir={workdir}", f"--matrix={MATRIX}",
+                 f"--credentials-file={CREDENTIALS_PATH}",
+                 f"--checkpoint-store={checkpoints.store_path(RUNTIME_DIR, workdir)}",
+                 f"--run-id={_run_meta['id']}",
+                 # 工作目录包住数据目录时，检查点不能把运行记录、凭据也拍进去
+                 f"--checkpoint-exclude={DATA_DIR}"]
     # Give main.py its own session/process group (POSIX) or process group
     # (Windows) so POST /cancel can kill the WHOLE tree in one shot -- the
     # claude/dsh/codebuddy child subprocesses main.py spawns via
@@ -1219,6 +1865,8 @@ def _spawn_main(argv_tail: list[str]) -> int:
     # pid would leave those children orphaned and still billing, invisibly.
     popen_kwargs = ({"start_new_session": True} if os.name != "nt"
                     else {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP})
+    # 这次尝试开始时事件流有多长：--resume 续写同一个文件，看门狗只认这之后的
+    since = os.path.getsize(EVENTS_PATH) if RUNS_DIR and os.path.exists(EVENTS_PATH) else 0
     try:
         _current = subprocess.Popen(argv, **popen_kwargs)
     except OSError as e:
@@ -1238,29 +1886,36 @@ def _spawn_main(argv_tail: list[str]) -> int:
         _run_meta["cancel_flag"] = {"cancel_requested": False}
         threading.Thread(target=_watch_run,
                          args=(_run_meta["id"], _current, EVENTS_PATH,
-                               _run_meta["cancel_flag"]),
+                               _run_meta["cancel_flag"], since),
                          daemon=True).start()
     return _current.pid
 
 
-def _events_tail(path: str) -> str:
+def _events_tail(path: str, since: int = 0) -> str:
+    """Last 64KB of the stream, never reaching back before `since` -- a
+    --resume rerun appends to the same file, and the previous attempt's
+    run_finished / run_crashed / run_cancelled must not answer for this one."""
     try:
         with open(path, "rb") as f:
             f.seek(0, 2)
             size = f.tell()
-            f.seek(max(0, size - 65536))
+            f.seek(max(since, size - 65536))
             return f.read().decode("utf-8", errors="replace")
     except OSError:
         return ""
 
 
 def _tail_has_run_finished(tail: str) -> bool:
+    return _tail_has(tail, "run_finished")
+
+
+def _tail_has(tail: str, event_type: str) -> bool:
     for line in tail.splitlines():
         line = line.strip()
         if not line:
             continue
         try:
-            if json.loads(line).get("type") == "run_finished":
+            if json.loads(line).get("type") == event_type:
                 return True
         except json.JSONDecodeError:
             continue
@@ -1392,6 +2047,12 @@ def _render_export_summary(run_id: str, board, events: list[dict],
     else:
         total_full = total_paid = round(total, 4)
         note = "（运行未完全结束，此数字可能不完整）"
+    for event in events:
+        if event.get('type') in ('run_finished', 'api_cost_updated'):
+            total_full = round(float(event.get('total_cost_usd') or 0), 4)
+            total_paid = round(float(event.get('paid_api_cost_usd') or 0), 4)
+    if any(event.get('cost_complete') is False for event in events):
+        note += '（费用未知：金额仅为已知部分）'
 
     lines = [
         f"# {title}",
@@ -1523,31 +2184,61 @@ def _search_runs(q: str) -> dict:
             "truncated": len(results) >= MAX_SEARCH_RESULTS, "results": results}
 
 
-def _record_crash(run_id: str, error: str, events_path: str) -> None:
-    try:
-        bus = EventBus(events_path)
-        bus.emit("run_crashed", run_id=run_id, error=error[:500])
-        bus.close()
-    except OSError:
-        pass
+def _record_crash(run_id: str, error: str, events_path: str,
+                  since: int | None = None) -> None:
+    # 看门狗（传了 since）：这次尝试里引擎自己已经写了带真实原因的 run_crashed
+    # （比如规划失败）时，不再追加一条笼统的「exited with code N」（bug B11）
+    if since is None or not _tail_has(_events_tail(events_path, since), "run_crashed"):
+        try:
+            bus = EventBus(events_path)
+            bus.emit("run_crashed", run_id=run_id, error=error[:500])
+            bus.close()
+        except OSError:
+            pass
     _runs_update(run_id, status="crashed")
 
 
-def _record_cancelled(run_id: str, events_path: str) -> None:
+def _record_cancelled(run_id: str, events_path: str, since: int | None = None) -> None:
     """POST /cancel killed this run's whole process group on purpose --
     keep that distinct from _record_crash (an unrequested, unexpected
     exit): the frontend needs to say "you cancelled this" rather than
-    "the engine crashed", and index.jsonl's status should say so too."""
-    try:
-        bus = EventBus(events_path)
-        bus.emit("run_cancelled", run_id=run_id)
-        bus.close()
-    except OSError:
-        pass
+    "the engine crashed", and index.jsonl's status should say so too.
+    A gate cancel may already have made the engine emit run_cancelled
+    before the kill landed -- say it once per attempt, not twice."""
+    if since is None or not _tail_has(_events_tail(events_path, since), "run_cancelled"):
+        try:
+            bus = EventBus(events_path)
+            bus.emit("run_cancelled", run_id=run_id)
+            bus.close()
+        except OSError:
+            pass
     _runs_update(run_id, status="cancelled")
 
 
-def _watch_run(run_id: str, proc, events_path: str, cancel_flag: dict) -> None:
+def _close_run_checkpoints(run_id: str) -> None:
+    """引擎退出后：收掉它没来得及收的段，把改动文件数记进运行索引（设置页和
+    侧栏的「改动 N」）。不抛异常 —— 看门狗接下来还要如实记录运行结局。"""
+    if not RUNS_DIR or not RUNTIME_DIR or not run_id:
+        return
+    board_path = os.path.join(RUNS_DIR, run_id, "blackboard.jsonl")
+    if not os.path.exists(board_path):
+        return
+    try:
+        with _checkpoint_lock:
+            board = Blackboard(board_path, on_write=None)
+            run_changes.close_open(board, RUNTIME_DIR, run_id, note="", author="system",
+                                   exclude=(DATA_DIR,))
+            changed = run_changes.summary(board, RUNTIME_DIR)["changed"]
+        # 检查点锁已放开才写运行索引（它要拿 _runs_lock，两把锁不嵌套）；写索引失败
+        # 也只是少一个「改动 N」，不能让看门狗死在记录运行结局之前
+        if changed:
+            _runs_update(run_id, changes=changed)
+    except Exception as e:
+        print(f"closing the checkpoints of run {run_id} failed: {e}", file=sys.stderr)
+
+
+def _watch_run(run_id: str, proc, events_path: str, cancel_flag: dict,
+               since: int = 0) -> None:
     """One daemon thread per run: when the engine exits, decide how it ended
     and keep index.jsonl (and, on a crash, the event stream) honest. An
     engine that exits nonzero WITHOUT a run_finished event crashed -- the
@@ -1555,18 +2246,23 @@ def _watch_run(run_id: str, proc, events_path: str, cancel_flag: dict) -> None:
     POST /cancel also exits nonzero without run_finished (SIGTERM has no
     handler installed in main.py), so cancel_flag is checked FIRST -- same
     exit shape, opposite meaning, and only the caller who set the flag
-    knows which one this was."""
+    knows which one this was. `since` = the stream's length when this
+    attempt was spawned: a --resume rerun appends to the same file, so only
+    what came after it speaks for this attempt."""
     try:
         proc.wait()
     except Exception:
         return
+    # 取消、崩溃时引擎来不及拍结束检查点：在补发 run_cancelled / run_crashed
+    # 之前补上（change-safety-net.md §3.2）
+    _close_run_checkpoints(run_id)
     if cancel_flag.get("cancel_requested"):
-        _record_cancelled(run_id, events_path)
+        _record_cancelled(run_id, events_path, since)
         return
-    tail = _events_tail(events_path)
+    tail = _events_tail(events_path, since)
     if proc.returncode != 0 and not _tail_has_run_finished(tail):
         _record_crash(run_id, f"engine exited with code {proc.returncode} before run_finished",
-                      events_path)
+                      events_path, since)
     elif _tail_has_run_finished(tail):
         status, cost = _run_finished_summary(tail)
         _runs_update(run_id, status=status, cost_usd=round(cost, 4))
@@ -1682,6 +2378,16 @@ def _terminate_current_process_tree(proc) -> bool:
             with contextlib.suppress(ProcessLookupError, PermissionError):
                 os.killpg(pgid, signal.SIGKILL)
     return True
+
+
+def _cancel_current_run() -> bool:
+    """Mark the run as user-cancelled for the watchdog, then kill main.py's
+    whole process tree. Shared by POST /cancel and a gate's 「取消整个运行」.
+    False only when the kill failed and the run is still alive -- callers
+    must not report a false success."""
+    if _run_meta.get("cancel_flag") is not None:
+        _run_meta["cancel_flag"]["cancel_requested"] = True
+    return _terminate_current_process_tree(_current) or not _run_busy()
 
 
 # ---------- best-effort in-process scheduler (NOT OS-level cron) ----------
@@ -1816,6 +2522,370 @@ MAX_EXPORT_BYTES = 200 * 1024 * 1024
 MAX_SEARCH_RESULTS = 200
 
 
+def _manager_turn(body: dict, sid: str, message: str, context=None):
+    """Run one logically reserved turn without holding `_chat_lock`."""
+    if context is not None:
+        _validate_goal_context(context)
+    workdir = WORKDIR if context is None else context["workdir"]
+    sess, _created = _session_for_chat(sid)
+    router = _session_router(sess) if context is None else _session_router(sess, context)
+    prefs = _ui_prefs() if context is None else context["prefs"]
+    pinned_mgr = _apply_manager_pref(router, prefs)
+    turn_options = _manager_execution_options(prefs)
+
+    staged = _session_stage(sess)
+    retrying_incomplete_turn = (
+        staged["history"] and staged["history"][-1].get("role") == "user" and
+        staged["history"][-1].get("text") == message)
+    if not retrying_incomplete_turn:
+        answers = _choice_answers(body.get("choice_answers"))
+        if staged["history"] and \
+                staged["history"][-1].get("role") == "manager" and \
+                staged["history"][-1].get("questions") and \
+                not staged["history"][-1].get("answered"):
+            staged["history"][-1]["answered"] = True
+            staged["history"][-1]["answers"] = answers
+        staged["history"].append({"role": "user", "text": message,
+                                  "ts": round(time.time(), 3)})
+
+        correcting = (staged["awaiting_confirmation"] and
+                      not manager.is_confirmation(message))
+        if correcting:
+            staged["awaiting_confirmation"] = False
+        _session_save(staged)
+        _sessions[sid] = staged
+        sess = staged
+
+    # 每轮只展示这一轮的进度，不累积历史
+    _progress_reset(sid)
+
+    if sess["awaiting_confirmation"]:
+        if manager.is_confirmation(message):
+            p = sess["proposal"]
+            try:
+                spawn_args = [
+                    f"--goal={p['goal']}",
+                    f"--constraints={p['constraints']}",
+                ] + (_gate_argv() if context is None else _gate_argv(prefs=prefs)) + _manager_budget_argv(sid)
+                pid, run_id = (_spawn_manager_main_if_idle(spawn_args) if context is None else
+                               _spawn_manager_main_if_idle(spawn_args, context=context, owner_goal_id=sid))
+            except OSError as e:
+                return 502, {"error": f"failed to start engine: {e}"[:300],
+                                  "session_id": sid}
+            if pid is None:
+                return 409, {"error": _busy_error(),
+                                  "session_id": sid}
+            cost = sess["cost_usd"]
+            warning = _archive_manager_session(sess, run_id)
+            response = {"status": "started", "pid": pid,
+                        "session_id": sid, "manager_cost_usd": cost,
+                        "cost_complete": _paid_complete(router)}
+            if warning:
+                response["persistence_warning"] = warning[:300]
+            return 200, response
+
+    force = (manager.should_force_start(message)
+             or sess["questions"] >= manager.MANAGER_MAX_TURNS)
+    paid_before = getattr(getattr(router, 'paid_ledger', None), 'spent_usd', 0)
+    try:
+        step = asyncio.run(manager.manager_step(
+            sess["history"], router, workdir, force_finish=force,
+            on_event=_progress_sink(sid),
+            **({'execution_options': turn_options} if turn_options else {})))
+    except (RuntimeError, ValueError) as e:
+        paid_after = getattr(getattr(router, 'paid_ledger', None), 'spent_usd', 0)
+        if paid_after > paid_before:
+            failed = _session_stage(sess)
+            failed['cost_usd'] += paid_after - paid_before
+            _session_save(failed)
+            _sessions[sid] = failed
+        # ValueError = 经理路由被清空（设置页「从所有降级链移除」造得出来）。
+        # 漏接它 = handler 抛异常 = 连接被丢弃，前端只会报「连不上」（§6.8）
+        error = str(e)
+        if isinstance(e, ValueError):
+            error = f"经理链上没有 agent（{error}）——设置页里可能把它们全移除了"
+        if pinned_mgr:
+            error = (f"你指定的经理 {pinned_mgr} 不可用（{error}）——"
+                     f"换一个，或把经理改回『自动』")
+        return 502, {"error": error, "session_id": sid,
+                          "cost_complete": _paid_complete(router),
+                          "pinned_manager": pinned_mgr}
+    staged = _session_stage(sess)
+    staged["cost_usd"] += step.get("_cost_usd", 0.0)
+
+    if step["status"] == "asking" and not force:
+        staged["questions"] += 1
+        questions = step.get("questions") or []
+        staged["history"].append({
+            "role": "manager", "text": step["question"],
+            "ts": round(time.time(), 3), "questions": questions,
+            "answered": False, "answers": {},
+        })
+        _session_save(staged)
+        _sessions[sid] = staged
+        return 200, {"status": "asking", "question": step["question"],
+                          "questions": questions,
+                          "session_id": sid,
+                          "manager_cost_usd": staged["cost_usd"], "cost_complete": _paid_complete(router)}
+    if step["status"] == "asking":   # forced but still asking: mirror CLI behavior
+        return 502, {"error": "manager kept asking after being told to finalize",
+                          "session_id": sid}
+    staged["proposal"] = {"goal": step["goal"],
+                          "constraints": step.get("constraints", "")}
+    staged["awaiting_confirmation"] = True
+    proposal_text = ("确认一下——\n目标：" + staged["proposal"]["goal"] +
+                     "\n约束：" +
+                     (staged["proposal"]["constraints"] or "（无）") +
+                     "\n没问题回复“对/开始”；要改的话直接说哪里不对。")
+    staged["history"].append({"role": "manager", "text": proposal_text,
+                              "ts": round(time.time(), 3)})
+    _session_save(staged)
+    _sessions[sid] = staged
+    return 200, {"status": "confirm", "session_id": sid,
+                      "manager_cost_usd": staged["cost_usd"],
+                      "cost_complete": _paid_complete(router),
+                      **staged["proposal"]}
+
+
+def _discard_manager_session(sid):
+    try:
+        active = _active_session_id()
+        if not active:
+            return 200, {"ok": True}
+        if active != sid:
+            # 另一个标签页已经开了新会话，这个请求来自过期的页面
+            return 409, {"error": "another manager session is active",
+                              "session_id": active}
+        if sid in _chat_inflight:
+            return 409, {"error": "manager turn is still in progress"}
+        path = _session_path(sid)
+        if not _chat_lock.acquire(blocking=False):
+            return 409, {"error": "manager turn is still in progress"}
+        locked_reply = None
+        try:
+            active = _active_session_id()
+            if not active:
+                locked_reply = (200, {"ok": True})
+            elif active != sid:
+                locked_reply = (409, {
+                    "error": "another manager session is active",
+                    "session_id": active,
+                })
+            elif sid in _chat_inflight:
+                locked_reply = (409, {
+                    "error": "manager turn is still in progress",
+                })
+            elif path:
+                try:
+                    os.unlink(path)
+                except FileNotFoundError:
+                    pass
+            if locked_reply is None:
+                _clear_active_session(sid)
+                _sessions.pop(sid, None)
+                _progress_reset(sid)
+        finally:
+            _chat_lock.release()
+        if locked_reply is not None:
+            return locked_reply
+        return 200, {"ok": True}
+    except (SessionDataError, OSError) as e:
+        return 500, {"error": str(e)}
+
+
+def _goal_store():
+    if not RUNTIME_DIR:
+        raise ValueError('目标队列需要配置项目数据目录')
+    return GoalStore(os.path.join(RUNTIME_DIR, 'goals.json'))
+
+
+def _goal_owner(except_id=''):
+    if not RUNTIME_DIR:
+        return ''
+    # Unreadable storage must close the execution gate, not become an empty queue.
+    try:
+        items = _goal_store().snapshot()['items']
+    except (GoalDataError, OSError):
+        return '__unreadable__'
+    for item in items:
+        if item['state'] not in GOAL_TERMINAL:
+            if item['state'] != 'waiting' and item['id'] != except_id:
+                return item['id']
+            break
+    return ''
+
+
+def _goal_run_state(run_id):
+    if _run_meta.get('id') == run_id and _run_busy():
+        return 'running'
+    entries = _read_run_index(INDEX_PATH) if INDEX_PATH else []
+    entry = next((r for r in reversed(entries) if r.get('run_id') == run_id), {})
+    status = entry.get('status')
+    if status in {'done', 'failed', 'cancelled', 'crashed'}:
+        return 'failed' if status == 'crashed' else status
+    # An owned process that just exited still has its watcher finishing checkpoints.
+    if _run_meta.get('id') == run_id and _current is not None:
+        return 'starting'
+    try:
+        events_path = os.path.join(os.path.dirname(_run_manager_archive_path(run_id)), 'events.jsonl')
+        if os.path.islink(events_path):
+            return 'interrupted'
+        proven = ''
+        for event in _read_events_full(events_path):
+            if not isinstance(event, dict):
+                continue
+            kind = event.get('type')
+            if kind == 'plan_created':
+                proven = ''
+            elif kind == 'run_cancelled':
+                proven = 'cancelled'
+            elif kind == 'run_crashed':
+                proven = 'failed'
+            elif kind == 'run_finished' and proven != 'cancelled':
+                proven = 'failed' if 'failed' in (event.get('statuses') or {}).values() else 'done'
+        if proven:
+            return proven
+    except (SessionDataError, OSError, ValueError, AttributeError):
+        pass
+    return 'interrupted'
+
+
+def _goal_recover():
+    if not RUNTIME_DIR:
+        return
+    proofs = {}
+    for item in _goal_store().snapshot()['items']:
+        sess = _session_load_disk(item['id'])
+        proofs[item['id']] = {'session': sess, 'run_id': item['run_id'],
+                             'run_state': _goal_run_state(item['run_id']) if item['run_id'] else ''}
+    _goal_store().recover(proofs, time.time())
+    active = _active_session_id()
+    if active:
+        recovered = _goal_store().get(active)
+        if recovered and recovered['state'] in GOAL_TERMINAL:
+            _clear_active_session(active)
+
+
+def _goal_tick():
+    if not RUNTIME_DIR or _goals_stopping():
+        return
+    item = None
+    with _settings_lock, _spawn_lock, _chat_lock:
+        if _goals_stopping() or _connection_inflight or _chat_inflight:
+            return
+        if not _checkpoint_lock.acquire(blocking=False):
+            return
+        try:
+            store = _goal_store()
+            head = next((r for r in store.snapshot()['items'] if r['state'] not in GOAL_TERMINAL), None)
+            if not head:
+                return
+            if head['state'] == 'running' or (head['state'] == 'interrupted' and head['run_id']):
+                state = _goal_run_state(head['run_id'])
+                if state in GOAL_TERMINAL or (head['state'] == 'running' and state == 'interrupted'):
+                    store.finish_run(head['id'], state, time.time())
+                    if state in GOAL_TERMINAL and _active_session_id() == head['id']:
+                        _clear_active_session(head['id'])
+                return
+            if _run_busy():
+                return
+            active = _active_session_id()
+            if active and active != head['id']:
+                return
+            item = store.claim_next(time.time())
+            if item:
+                _chat_inflight.add(item['id'])
+        finally:
+            _checkpoint_lock.release()
+    if item is None:
+        return
+    try:
+        try:
+            _validate_goal_context(item['context'])
+        except ValueError:
+            status, payload = 400, {}
+        else:
+            try:
+                turn = item['pending_turn']
+                status, payload = _manager_turn({'choice_answers': turn['choice_answers']},
+                                                item['id'], turn['message'], item['context'])
+            except Exception:
+                status, payload = 502, {}
+        _goal_store().complete_turn(item['id'], item['pending_turn']['id'], status,
+                                    _safe_goal_response(status, payload), time.time())
+    finally:
+        with _chat_lock:
+            _chat_inflight.discard(item['id'])
+
+
+def _goal_loop(stop_event):
+    while not stop_event.is_set():
+        try:
+            _goal_tick()
+        except (GoalDataError, SessionDataError, OSError, ValueError):
+            # Preserve failed records; GET /goals reports the readable storage error.
+            pass
+        stop_event.wait(1)
+
+
+def _safe_goal_response(status, payload):
+    allowed = {'status', 'session_id', 'question', 'questions', 'goal', 'constraints',
+               'manager_cost_usd', 'cost_complete', 'pid'}
+    return {key: copy.deepcopy(value) for key, value in payload.items() if key in allowed}
+
+
+def _goal_public(record, items=None):
+    result = copy.deepcopy(record)
+    items = items if items is not None else _goal_store().snapshot()['items']
+    active = [item for item in items if item['state'] not in GOAL_TERMINAL]
+    result['position'] = next((i + 1 for i, item in enumerate(active) if item['id'] == record['id']), 0)
+    result['pending'] = (record['state'] in {'processing', 'starting'} or
+                         record['state'] == 'awaiting_input' and bool(record['pending_turn']))
+    result.pop('turns', None)
+    result.pop('pending_turn', None)
+    result['history'] = []
+    sess = _sessions.get(record['id']) or _session_load_disk(record['id'])
+    if (sess is None and record['run_id'] and
+            os.path.lexists(os.path.join(RUNS_DIR, record['run_id']))):
+        path = _run_manager_archive_path(record['run_id'])
+        if path and os.path.exists(path):
+            try:
+                with open(path, encoding='utf-8') as handle:
+                    sess = _validate_session_data(json.load(handle))
+            except (ValueError, UnicodeError):
+                raise SessionDataError('目标经理记录不可读') from None
+            if sess['session_id'] != record['id'] or sess['run_id'] != record['run_id']:
+                raise SessionDataError('目标与经理记录不一致')
+    if sess:
+        result['history'] = copy.deepcopy(sess['history'])
+        result['manager_cost_usd'] = sess['cost_usd']
+    result['progress'] = _progress_read(record['id'])
+    return result
+
+
+def _goal_endpoint(fn):
+    def wrapped(self, *args):
+        try:
+            return fn(self, *args)
+        except GoalConflict as exc:
+            self._reply(409, {'error': str(exc)})
+        except (GoalDataError, SessionDataError, OSError):
+            self._reply(500, {'error': '目标记录不可读或保存失败，原文件已保留'})
+        except (ValueError, KeyError, TypeError):
+            self._reply(400, {'error': '目标请求或配置无效，请检查路径和接入设置'})
+    return wrapped
+
+
+def _goal_body(body, keys):
+    if not isinstance(body, dict) or set(body) != set(keys):
+        raise ValueError('目标请求字段无效')
+    if 'request_id' in keys:
+        _validate_session_id(body['request_id'])
+    if 'message' in keys and (not isinstance(body['message'], str) or
+                              not body['message'].strip() or len(body['message']) > 20000):
+        raise ValueError('目标消息无效')
+
+
 class Handler(SimpleHTTPRequestHandler):
     # Socket timeout per connection. BaseHTTPRequestHandler defaults this
     # to None, which means a client that opens a TCP connection and then
@@ -1829,7 +2899,50 @@ class Handler(SimpleHTTPRequestHandler):
     # unaffected because it isn't blocked on the socket while it works.
     timeout = 60
 
+    def end_headers(self):
+        # 静态页每次都要回源校验（没改就是 304）：只有 Last-Modified 的话浏览器
+        # 会凭经验缓存，更新之后还在跑旧前端（2026-09-25 浏览器实测踩到）
+        if getattr(self, "_static", False):
+            self.send_header("Cache-Control", "no-cache")
+        super().end_headers()
+
+    def parse_request(self):
+        # DNS rebinding (B9): a page on evil.example whose name re-resolves to
+        # 127.0.0.1 is same-origin as far as the browser can tell, so it could
+        # read every GET here. Its requests still say Host: evil.example.
+        if not super().parse_request():
+            return False
+        port = self.server.server_address[1]
+        if (self.headers.get("Host") or "").lower() not in (f"127.0.0.1:{port}",
+                                                             f"localhost:{port}"):
+            self.close_connection = True      # an unread POST body must not become the next request
+            self._reply(403, {"error": "unexpected Host header"})
+            return False
+        return True
+
+    def send_head(self):
+        # Explicit static allowlist (B9): the fallback used to serve the whole
+        # working directory -- source, .git/, local settings, stray files.
+        path = urllib.parse.urlparse(self.path).path
+        if path == "/":                  # the bare origin was that directory listing
+            self.send_response(302)
+            self.send_header("Location", "/dashboard.html")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return None
+        if path not in ("/dashboard.html", "/settings.html",
+                        "/assets/studio.css", "/assets/studio.js", "/assets/goal-queue.js",
+                        "/assets/connections.css", "/assets/connections.js",
+                        "/assets/async-ui.css", "/assets/async-ui.js",
+                        "/assets/agent-catalog.css", "/assets/agent-catalog.js",
+                        "/assets/settings-navigation.css", "/assets/settings-navigation.js",
+                        "/assets/vendor/lucide.min.js"):
+            self.send_error(404, "File not found")
+            return None
+        return super().send_head()
+
     def do_GET(self):
+        self._static = False
         path = self.path.split("?")[0]
         if path == "/file":
             qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
@@ -1837,9 +2950,21 @@ class Handler(SimpleHTTPRequestHandler):
         elif path == "/file/diff":
             qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
             self._handle_file_diff((qs.get("task") or [""])[0], (qs.get("path") or [""])[0])
+        elif path == "/run/changes":
+            qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            self._handle_run_changes((qs.get("run") or [""])[0])
+        elif path == "/run/changes/diff":
+            qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            self._handle_run_changes_diff((qs.get("run") or [""])[0],
+                                          (qs.get("seg") or [""])[0],
+                                          (qs.get("path") or [""])[0])
         elif path == "/export":
             qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
             self._handle_export((qs.get("run") or [""])[0])
+        elif path == "/task/output":
+            qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            self._handle_task_output((qs.get("task") or [""])[0],
+                                     (qs.get("run") or [""])[0])
         elif path == "/events.jsonl":
             self._handle_events()
         elif path == "/blackboard.jsonl":
@@ -1848,6 +2973,12 @@ class Handler(SimpleHTTPRequestHandler):
             # used it, but a read-only view of the real board is worth
             # keeping on its own -- tests/test_config_validation.py covers it.
             self._handle_blackboard()
+        elif path == '/goals':
+            self._handle_goal_list()
+        elif re.fullmatch(r'/goals/[0-9a-f]{12}', path):
+            self._handle_goal_get(path.rsplit('/', 1)[1])
+        elif re.fullmatch(r'/goals/[0-9a-f]{12}/run', path):
+            self._handle_goal_run(path.split('/')[2])
         elif path == "/health":
             self._handle_health()
         elif path == "/settings":
@@ -1864,6 +2995,10 @@ class Handler(SimpleHTTPRequestHandler):
             self._reply(200, {"steps": _progress_read((qs.get("session_id") or [""])[0])})
         elif path == "/settings/agents":
             self._handle_settings_agents()
+        elif path == '/settings/local-agents':
+            self._handle_local_agents()
+        elif path == '/settings/api-connections':
+            self._handle_api_connections()
         elif path == "/settings/projects":
             self._handle_settings_projects()
         elif path == "/settings/tools":
@@ -1871,6 +3006,7 @@ class Handler(SimpleHTTPRequestHandler):
         elif path == "/agents":
             self._handle_agents()
         else:
+            self._static = True
             super().do_GET()
 
     def do_POST(self):
@@ -1890,10 +3026,22 @@ class Handler(SimpleHTTPRequestHandler):
         except (json.JSONDecodeError, ValueError):
             self._reply(400, {"error": "bad json"})
             return
-        if self.path == "/run":
+        if not isinstance(body, dict):
+            self._reply(400, {"error": "JSON body must be an object"})
+            return
+        if self.path == '/goals':
+            self._handle_goal_submit(body)
+        elif re.fullmatch(r'/goals/[0-9a-f]{12}/(message|cancel|retry|resolve)', self.path):
+            _, _, goal_id, action = self.path.split('/')
+            getattr(self, '_handle_goal_' + action)(goal_id, body)
+        elif self.path == "/run":
             self._handle_run(body)
         elif self.path == "/rerun":
             self._handle_rerun(body)
+        elif self.path == "/run/rollback":
+            self._handle_rollback(body, undo=False)
+        elif self.path == "/run/rollback/undo":
+            self._handle_rollback(body, undo=True)
         elif self.path == "/cancel":
             self._handle_cancel(body)
         elif self.path == "/gate":
@@ -1909,8 +3057,22 @@ class Handler(SimpleHTTPRequestHandler):
             self._handle_shutdown(body)
         elif self.path == "/settings/preflight":
             self._handle_preflight(body)
+        elif self.path == '/settings/api-connections/test':
+            self._handle_api_connection_test(body)
+        elif self.path in ('/settings/api-connections', '/settings/api-connections/delete', '/settings/api-connections/migrate'):
+            self._handle_save_api_connection(body)
         elif self.path == "/settings/config":
             self._handle_settings_config(body)
+        elif self.path == '/settings/local-agents/discover':
+            self._handle_local_agents(refresh=True)
+        elif self.path == '/settings/local-agents/check':
+            self._handle_check_local_agent(body)
+        elif self.path == '/settings/local-agents/test':
+            self._handle_local_model_test(body)
+        elif self.path == '/settings/local-agents':
+            self._handle_save_local_agents(body)
+        elif self.path == "/settings/agent-options":
+            self._handle_agent_options(body)
         elif self.path == "/settings/credentials":
             self._handle_settings_credentials(body)
         elif self.path == "/settings/switch-project":
@@ -1934,6 +3096,112 @@ class Handler(SimpleHTTPRequestHandler):
             self._reply(404, {"error": f"unknown endpoint: {self.path}"})
 
     # ---------- GET handlers ----------
+
+    @_goal_endpoint
+    def _handle_goal_list(self):
+        snapshot = _goal_store().snapshot()
+        self._reply(200, {'items': [_goal_public(r, snapshot['items']) for r in snapshot['items']],
+                          'revision': snapshot['revision']})
+
+    @_goal_endpoint
+    def _handle_goal_get(self, goal_id):
+        record = _goal_store().get(goal_id)
+        if record is None:
+            self._reply(404, {'error': '目标不存在'})
+            return
+        self._reply(200, _goal_public(record))
+
+    @_goal_endpoint
+    def _handle_goal_run(self, goal_id):
+        record = _goal_store().get(goal_id)
+        if not record or not record['run_id']:
+            self._reply(404, {'error': '此目标没有运行记录'})
+            return
+        if not os.path.lexists(os.path.join(RUNS_DIR, record['run_id'])):
+            self._reply(404, {'error': '此目标的运行历史不存在'})
+            return
+        events_path = os.path.join(os.path.dirname(_run_manager_archive_path(record['run_id'])), 'events.jsonl')
+        if os.path.islink(events_path) or not os.path.isfile(events_path):
+            self._reply(404, {'error': '此目标的运行历史不可读'})
+            return
+        self._reply(200, {'run_id': record['run_id'], 'status': record['state'],
+                          'events': [e for e in _read_events_full(events_path) if isinstance(e, dict)]})
+
+    @_goal_endpoint
+    def _handle_goal_resolve(self, goal_id, body):
+        _goal_body(body, {'confirm_stopped'})
+        if body['confirm_stopped'] is not True:
+            raise ValueError('请先检查并确认已有运行已停止')
+        with _settings_lock, _spawn_lock, _chat_lock:
+            if _run_busy() or _chat_inflight or _connection_inflight or _checkpoint_lock.locked():
+                raise GoalConflict('仍有运行或请求在处理，不能结束中断目标')
+            record = _goal_store().get(goal_id)
+            if not record:
+                self._reply(404, {'error': '目标不存在'})
+                return
+            state = _goal_run_state(record['run_id']) if record['run_id'] else ''
+            if record['state'] == 'interrupted' and state in GOAL_TERMINAL:
+                record = _goal_store().finish_run(goal_id, state, time.time())
+            else:
+                record = _goal_store().resolve(goal_id, time.time())
+            if _active_session_id() == goal_id:
+                _clear_active_session(goal_id)
+        self._reply(202, {'goal': _goal_public(record)})
+
+    @_goal_endpoint
+    def _handle_goal_submit(self, body):
+        _goal_body(body, {'request_id', 'message', 'workdir', 'prefs'})
+        prefs = _goal_prefs(body['prefs'])
+        path = body['workdir']
+        if not isinstance(path, str) or not os.path.isabs(path):
+            raise ValueError('工作区路径无效')
+        with _settings_lock:
+            existing = _goal_store().get(body['request_id'])
+            if existing:
+                if (existing['message'] != body['message'] or existing['context']['prefs'] != prefs or
+                        existing['context']['workdir'] != os.path.realpath(path)):
+                    raise GoalConflict('相同请求 ID 的目标内容不同')
+                context = existing['context']
+            else:
+                context = _capture_goal_context(path, prefs)
+            record = _goal_store().enqueue(body['request_id'], body['message'], context, time.time())
+        self._reply(202, {'goal': _goal_public(record)})
+
+    @_goal_endpoint
+    def _handle_goal_message(self, goal_id, body):
+        _goal_body(body, {'request_id', 'message', 'choice_answers'})
+        GoalStore._answers(body['choice_answers'])
+        record = _goal_store().submit_turn(goal_id, body['request_id'], body['message'],
+                                         body['choice_answers'], time.time())
+        self._reply(202, {'goal': _goal_public(record)})
+
+    @_goal_endpoint
+    def _handle_goal_cancel(self, goal_id, body):
+        _goal_body(body, set())
+        with _settings_lock, _spawn_lock, _chat_lock:
+            record = _goal_store().get(goal_id)
+            if not record:
+                self._reply(404, {'error': '目标不存在'})
+                return
+            if record['state'] == 'running':
+                if record['run_id'] != _run_meta.get('id') or not _run_busy():
+                    raise GoalConflict('此运行已不由当前进程拥有，请刷新状态')
+                self._handle_cancel({})
+                return
+            record = _goal_store().cancel(goal_id, time.time())
+            if _active_session_id() == goal_id:
+                _clear_active_session(goal_id)
+        self._reply(202, {'goal': _goal_public(record)})
+
+    @_goal_endpoint
+    def _handle_goal_retry(self, goal_id, body):
+        _goal_body(body, {'request_id', 'use_current_settings', 'workdir', 'prefs'})
+        if body['use_current_settings'] is not True:
+            raise ValueError('请先确认重试')
+        with _settings_lock:
+            context = _capture_goal_context(body['workdir'], body['prefs'])
+            record = _goal_store().retry(goal_id, context, time.time(), turn_id=body['request_id'])
+        self._reply(202, {'goal': _goal_public(record)})
 
     def _handle_events(self):
         """The current run's event stream. The X-AgentHub-Run header is how
@@ -1994,7 +3262,7 @@ class Handler(SimpleHTTPRequestHandler):
             "budget": budget, "routes": routes, "tiers": tiers,
             "matrix_patch": _matrix_patch(),
             "ui_prefs": _ui_prefs(),
-            "agents": _probe_agents(),
+            "agents": _cached_local_agents(),
             "credentials": {
                 "deepseek": bool(os.environ.get("DEEPSEEK_API_KEY")
                                  or creds.get("DEEPSEEK_API_KEY")),
@@ -2009,6 +3277,131 @@ class Handler(SimpleHTTPRequestHandler):
     def _handle_settings_agents(self):
         self._reply(200, {"agents": _probe_agents()})
 
+    def _handle_local_agents(self, refresh=False):
+        try:
+            with _settings_lock:
+                result = _local_agent_snapshot(refresh=refresh)
+            self._reply(200, result)
+        except ValueError as exc:
+            self._reply(409, {'error': str(exc)})
+        except OSError:
+            self._reply(500, {'error': '无法保存发现结果，请检查数据目录权限'})
+
+    def _handle_check_local_agent(self, body):
+        try:
+            if set(body) != {'kind', 'revision'}:
+                raise ValueError('请求必须包含 kind 和 revision')
+            result = _inspect_local_agent(body['kind'], body['revision'])
+            self._reply(200, {'inspection': result})
+        except InspectionConflict as exc:
+            self._reply(409, {'error': str(exc)})
+        except (ValueError, TypeError):
+            self._reply(400, {'error': 'Agent 或配置版本无效，请刷新后重试'})
+        except OSError:
+            self._reply(500, {'error': '无法保存检查结果，请检查数据目录权限'})
+        except Exception:
+            self._reply(502, {'error': 'Agent 状态检查失败，请重试或在原工具中检查'})
+
+    @_settings_locked
+    def _handle_save_local_agents(self, body):
+        global MATRIX
+        if not CONFIG_PATH:
+            self._reply(400, {'error': '未配置数据目录'})
+            return
+        # Same ordering as start paths: settings edits hold spawn while publishing.
+        with _spawn_lock, _chat_lock:
+            if _run_busy() or _chat_inflight or _connection_inflight or _checkpoint_lock.locked():
+                self._reply(409, {'error': '正在运行，请结束当前任务或经理请求后重试'})
+                return
+            try:
+                cfg = _strict_config()
+                current = validate_local_settings(cfg.get('local_agents', {}), sys.platform)
+            except ValueError as exc:
+                self._reply(409, {'error': str(exc)})
+                return
+            try:
+                if set(body) != {'settings', 'expected_revision'}:
+                    raise ValueError('请求必须包含 settings 和 expected_revision')
+                expected = body['expected_revision']
+                if type(expected) is not int:
+                    raise ValueError('配置版本无效')
+                if expected != current['revision']:
+                    self._reply(409, {'error': '配置已更新，请刷新后重试'})
+                    return
+                settings = validate_local_settings(body['settings'], sys.platform)
+                if not settings['confirmed']:
+                    raise ValueError('请确认本机接入选择')
+                settings['revision'] = current['revision'] + 1
+                staged = json.loads(json.dumps(cfg))
+                staged['local_agents'] = settings
+                # Explicit user edits replace per-profile local overrides together.
+                base = _deep_merge(_load_yaml_dict(MATRIX_BASE), _matrix_patch(staged))
+                for kind, choice in settings['agents'].items():
+                    specs = staged.setdefault('matrix_patch', {}).setdefault('agents', {})
+                    for name, spec in base.get('agents', {}).items():
+                        if spec.get('kind') == kind:
+                            row = specs.setdefault(name, {})
+                            for key, field in PATH_FIELDS[kind].items():
+                                # Empty is an explicit return to discovery, including
+                                # overrides inherited from a copied base matrix.
+                                row[field] = choice['paths'].get(key, '')
+                checked = _local_agent_snapshot(refresh=True, cfg=staged)
+                staged['local_agent_resolutions'] = {}
+                for row in checked['agents']:
+                    if row['enabled'] and not row['available']:
+                        raise ValueError(row['label'] + ' 的命令行入口无效，请重新探测或指定路径')
+                    if row['enabled']:
+                        argv = row.get('argv')
+                        fields = list(PATH_FIELDS[row['kind']])
+                        if not isinstance(argv,list) or len(argv) != len(fields) or not all(isinstance(p,str) and p for p in argv):
+                            raise ValueError(row['label'] + ' 的执行入口不完整')
+                        staged['local_agent_resolutions'][row['kind']] = dict(zip(fields, argv))
+            except (ValueError, TypeError) as exc:
+                self._reply(400, {'error': str(exc)})
+                return
+            except OSError:
+                self._reply(500, {'error': '无法检查或保存本机安装信息'})
+                return
+            old_matrix = MATRIX
+            existed = os.path.exists(CONFIG_PATH)
+            try:
+                self._save_local_config(staged)
+            except OSError:
+                try:
+                    if existed:
+                        _atomic_write(CONFIG_PATH, yaml.safe_dump(cfg, allow_unicode=True), mode=0o600)
+                    elif os.path.exists(CONFIG_PATH):
+                        os.unlink(CONFIG_PATH)
+                    MATRIX = old_matrix
+                    _write_merged_matrix()
+                except OSError:
+                    pass
+                self._reply(500, {'error': '保存失败，未确认成功；请检查数据目录后刷新'})
+                return
+            self._reply(200, checked)
+
+    @staticmethod
+    def _save_local_config(cfg):
+        _save_config(cfg)
+        _write_merged_matrix()
+
+    def _runtime_catalog(self, kind):
+        if kind not in _inspection_locks:
+            return {'runtime_model_catalog': [], 'catalog_status': 'unsupported',
+                    'catalog_read_at': None, 'runtime_model_capabilities': {}}
+        snapshot = _inspection_snapshot(kind, _load_config())
+        catalog = snapshot.get('catalog') or {}
+        models = catalog.get('models', []) if catalog.get('status') == 'ready' else []
+        capabilities = {m['id']: {'effort_control': 'supported',
+                                'effort_levels': m['effort_levels'], 'source': 'runtime'}
+                        for m in models if m.get('effort_levels') and not catalog.get('stale')}
+        return {'runtime_model_catalog': models, 'catalog_status': 'stale' if catalog.get('stale') else catalog.get('status', 'unchecked'),
+                'catalog_read_at': catalog.get('read_at'), 'runtime_model_capabilities': capabilities}
+
+    def _selection_caps(self, kind, model, declared):
+        return selection_capabilities(kind, model, declared,
+            self._runtime_catalog(kind)['runtime_model_capabilities'])
+
     def _handle_agents(self):
         """Return matrix agent metadata with honest kind-level availability."""
         matrix = (MERGED_MATRIX_PATH if MERGED_MATRIX_PATH and
@@ -2018,14 +3411,20 @@ class Handler(SimpleHTTPRequestHandler):
         except Exception as exc:
             self._reply(500, {"error": f"读不了能力矩阵: {exc}"[:200]})
             return
-        probe = {item["id"]: item for item in _probe_agents()}
+        probe = {item["id"]: item for item in _cached_local_agents()}
         agents = []
+        catalogs = {}
         for name in router.all_agents():
             kind = router.kind(name)
             kind_probe = probe.get(kind)
+            if kind not in catalogs:
+                catalogs[kind] = self._runtime_catalog(kind)
             agents.append({
+                **router.agent_metadata(name),
+                **catalogs[kind],
                 "name": name,
                 "kind": kind,
+                "enabled": router.agent_enabled(name),
                 "animal": router.animal(name),
                 "tier": router.tier_of(name),
                 "specialty": router.specialty(name),
@@ -2063,9 +3462,40 @@ class Handler(SimpleHTTPRequestHandler):
                         "patched": patched})
         return out
 
-    def _handle_settings_tools(self):
-        self._reply(200, {"agents": self._tools_snapshot()})
+    def _permission_groups(self):
+        editable = {p['name']: p for p in self._tools_snapshot()}
+        cfg = _load_config()
+        matrix = project_api_connections(
+            _deep_merge(_load_yaml_dict(MATRIX_BASE), _matrix_patch(cfg)), cfg.get('api_connections', {}))
+        labels = {'claude_code': 'Claude Code', 'codex': 'Codex',
+                  'codebuddy': 'WorkBuddy / CodeBuddy', 'dsh': 'DeepSeek Harness',
+                  'openrouter': 'OpenRouter', 'mock': '模拟 Agent'}
+        controls = {
+            'claude_code': '每个角色的 allowedTools；只能在该角色原有上限内收紧。',
+            'codex': '工作调用使用 workspace-write 沙箱；模型测试使用 read-only 并禁用工具。',
+            'codebuddy': '模型测试禁用工具；工作调用权限由本机 WorkBuddy / CodeBuddy 配置控制。',
+            'api': '仅生成文本，无直接访问本机文件或执行命令的权限。',
+            'openrouter': '仅生成文本，无直接访问本机文件或执行命令的权限。',
+            'mock': '模拟运行，不调用本机 Agent。',
+        }
+        groups = {}
+        for name, spec in (matrix.get('agents') or {}).items():
+            if not isinstance(spec, dict):
+                continue
+            kind = spec.get('kind', 'unknown')
+            key = name if kind == 'api' else kind
+            group = groups.setdefault(key, {'kind': kind,
+                'label': str(spec.get('display_name') or spec.get('label') or name) if kind == 'api' else labels.get(kind, kind),
+                'editable': kind == 'claude_code', 'profiles': [],
+                'control_source': controls.get(kind, '权限由本机工具控制；此版本无法确认具体限制。'),
+                'capabilities': []})
+            group['profiles'].append(editable.get(name, {'name': name}))
+        return list(groups.values())
 
+    def _handle_settings_tools(self):
+        self._reply(200, {"agents": self._tools_snapshot(), "groups": self._permission_groups()})
+
+    @_settings_locked
     def _handle_settings_tools_save(self, body: dict):
         """Tighten-only relative to the matrix's OWN base set (not the
         currently-effective set) -- this is what makes a removal
@@ -2107,9 +3537,12 @@ class Handler(SimpleHTTPRequestHandler):
         if not isinstance(patch.get("agents"), dict):
             patch.pop("agents", None)   # a malformed agents value is discarded, not merged into
         if set(allowed) == set(base):
-            # fully restored to the matrix's own baseline -- drop the
-            # override entirely rather than persist a no-op patch forever
-            patch.get("agents", {}).pop(name, None)
+            # Drop only the tool override; model and effort defaults survive.
+            entry = patch.get("agents", {}).get(name)
+            if isinstance(entry, dict):
+                entry.pop('allowed_tools', None)
+                if not entry:
+                    patch['agents'].pop(name, None)
         else:
             # setdefault semantics: touch only this one key; other
             # existing patch fields for this agent survive untouched
@@ -2121,7 +3554,7 @@ class Handler(SimpleHTTPRequestHandler):
         _save_config(cfg)
         _write_merged_matrix()
         self._reply(200, {"ok": True, "clamped": clamped,
-                          "agents": self._tools_snapshot()})
+                          "agents": self._tools_snapshot(), "groups": self._permission_groups()})
 
     def _handle_file_diff(self, task_id: str, rel: str):
         """Live git diff (working tree vs HEAD) for one recorded
@@ -2133,6 +3566,16 @@ class Handler(SimpleHTTPRequestHandler):
             self._reply(404, {"error": "not a recorded deliverable of this task"})
             return
         workdir, _full = resolved
+        # 优先用这个任务自己的前后检查点：不是 git 仓库的文件夹也能看，看到的
+        # 也正是这个任务的改动（change-safety-net.md §5.3）
+        board = _board_with_task(task_id)
+        if RUNTIME_DIR and board is not None:
+            diff = run_changes.task_file_diff(board, RUNTIME_DIR, task_id, rel)
+            if diff is not None:
+                self._reply(200, {"ok": True, "diff": diff[:MAX_DIFF_CHARS],
+                                  "truncated": len(diff) > MAX_DIFF_CHARS,
+                                  "note": "这个任务开始前 → 结束后（Agent Hub 检查点）"})
+                return
         if shutil.which("git") is None:
             self._reply(200, {"ok": False, "error": "git not found"})
             return
@@ -2163,6 +3606,61 @@ class Handler(SimpleHTTPRequestHandler):
         self._reply(200, {"ok": True, "diff": diff, "truncated": truncated,
                           "note": (r.stderr or "")[:200]})
 
+    def _handle_run_changes(self, run_id: str):
+        """GET /run/changes?run=：这次运行按段、按任务改了哪些文件，能不能回滚，
+        回滚记录（change-safety-net.md §5.3）。只有一种情况会写：这次运行最后一段
+        还开着（serve.py 当时没看到它结束）、而此刻没有运行在进行，就补拍收尾
+        （§3.2）。检查点锁被占着就不补，下次再说 —— 读不能等一个几分钟的追问。"""
+        resolved = _resolve_run(run_id) if RUNTIME_DIR else None
+        if resolved is None:
+            self._reply(404, {"error": "run not found"})
+            return
+        rid, board_path, _events = resolved
+        board = None
+        if _checkpoint_lock.acquire(blocking=False):
+            try:
+                board = _load_board(board_path)
+                if board is not None and not _run_busy():
+                    try:
+                        run_changes.close_open(board, RUNTIME_DIR, rid, note=run_changes.LATE_NOTE,
+                                               author="system", exclude=(DATA_DIR,))
+                    except Exception as e:
+                        print(f"closing run {rid} on demand failed: {e}", file=sys.stderr)
+                        board = None   # put() updates memory before the disk: re-read what is really there
+            finally:
+                _checkpoint_lock.release()
+        if board is None:
+            board = _load_board(board_path)
+        if board is None:
+            self._reply(500, {"error": "这次运行的黑板读不了（文件可能损坏或正被占用）"})
+            return
+        data = run_changes.summary(board, RUNTIME_DIR)
+        data["run"] = rid
+        self._reply(200, data)
+
+    def _handle_run_changes_diff(self, run_id: str, seg: str, rel: str):
+        """GET /run/changes/diff?run=&seg=&path=：某段里某个文件的 diff。path 必须
+        在这一段的改动清单里（白名单，跟 GET /file 同一套做法），git 只拿到
+        字面路径（--literal-pathspecs）。"""
+        resolved = _resolve_run(run_id) if RUNTIME_DIR else None
+        if resolved is None or not (seg.isascii() and seg.isdigit() and len(seg) <= 9):
+            self._reply(404, {"error": "run or segment not found"})
+            return
+        board = _load_board(resolved[1])
+        if board is None:
+            self._reply(500, {"error": "这次运行的黑板读不了（文件可能损坏或正被占用）"})
+            return
+        try:
+            diff = run_changes.segment_diff(board, RUNTIME_DIR, int(seg), rel)
+        except LookupError as e:
+            self._reply(404, {"error": str(e)})
+            return
+        except checkpoints.CheckpointError as e:
+            self._reply(200, {"ok": False, "error": str(e)})
+            return
+        self._reply(200, {"ok": True, "diff": diff[:MAX_DIFF_CHARS],
+                          "truncated": len(diff) > MAX_DIFF_CHARS})
+
     def _handle_switch_project(self, body: dict):
         """Validate + persist the choice, then shut down exactly like
         _handle_shutdown -- see that method's docstring for the two
@@ -2178,7 +3676,9 @@ class Handler(SimpleHTTPRequestHandler):
             self._reply(400, {"error": "invalid project name (use letters, "
                                         "digits, - or _, max 64 chars)"})
             return
-        if _run_busy():
+        # 检查点锁也算忙：看门狗正在给刚结束的运行收尾时切走，那次运行会永远停在
+        # 「运行中」（同 _handle_shutdown）
+        if _run_busy() or _checkpoint_lock.locked():
             self._reply(409, {"error": _busy_error()})
             return
         # validation and the busy check BOTH come before the write --
@@ -2192,36 +3692,17 @@ class Handler(SimpleHTTPRequestHandler):
     # ---------- work area (workdir) picker ----------
 
     def _handle_pick_workdir(self, body: dict):
-        """macOS native folder chooser via a FIXED osascript command (no
-        user input ever reaches the argv -- nothing to inject). The chosen
-        path is only a candidate string: it takes effect only after
-        _handle_save_workdir validates it. Non-macOS: honest 400, manual
-        path input is the fallback."""
-        if sys.platform != "darwin":
-            self._reply(400, {"error": "自动选择文件夹目前只在 macOS 支持，请手动粘贴路径"})
+        """Only one chooser at a time; saving separately validates the path."""
+        if not _workdir_picker_lock.acquire(blocking=False):
+            self._reply(409, {'error': '文件夹选择窗口已经打开，请完成选择或取消'})
             return
-        script = 'POSIX path of (choose folder with prompt "选择 Agent Hub 的工作区域")'
         try:
-            # timeout is mandatory here: the chooser blocks until the user
-            # acts, and a dialog that opened behind another window (or was
-            # simply ignored) would otherwise park this handler thread
-            # forever. 5 minutes is generous for picking a folder; on
-            # expiry subprocess.run kills osascript, closing the dialog.
-            r = subprocess.run(["osascript", "-e", script],
-                               capture_output=True, text=True, timeout=300)
-        except subprocess.TimeoutExpired:
-            self._reply(200, {"cancelled": True,
-                              "error": "选择框超时未操作（5 分钟），已取消"})
-            return
-        except OSError as e:
-            self._reply(400, {"error": f"osascript 启动失败: {e}"})
-            return
-        path = (r.stdout or "").strip()
-        if r.returncode != 0 or not path:
-            self._reply(200, {"cancelled": True})
-            return
-        self._reply(200, {"path": path})
+            result = pick_workdir(sys.platform, run=subprocess.run)
+            self._reply(400 if result.get('error') and not result.get('cancelled') else 200, result)
+        finally:
+            _workdir_picker_lock.release()
 
+    @_settings_locked
     def _handle_save_workdir(self, body: dict):
         """Persist a workdir override (config.yaml `workdir` key) and apply
         it to the in-process WORKDIR global immediately. WORKDIR is only
@@ -2384,6 +3865,22 @@ class Handler(SimpleHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
+    def _handle_task_output(self, task_id: str, run_id: str):
+        """Full text of one task's output. task_completed carries only a
+        200-char preview, and that preview was all the drawer's 「产出全文」
+        showed (bug B7). Read-only. `run` picks the run because planner ids
+        like t1 repeat in every run; empty = the current run."""
+        if not task_id or "/" in task_id:
+            self._reply(400, {"error": "invalid task id"})
+            return
+        resolved = _resolve_run(run_id)
+        output = (Blackboard(resolved[1], on_write=lambda e: None)
+                  .get(f"tasks/{task_id}/output") if resolved else None)
+        if output is None:
+            self._reply(404, {"error": f"task '{task_id}' has no output in this run"})
+            return
+        self._reply(200, {"task": task_id, "output": output})
+
     def _handle_export(self, run_id: str):
         """GET /export?run=<id>: one zip with every file this run's tasks
         actually produced (grouped by task id) plus a templated SUMMARY.md.
@@ -2486,8 +3983,13 @@ class Handler(SimpleHTTPRequestHandler):
         if not os.path.exists(BOARD_PATH):
             self._reply(400, {"error": "no existing blackboard to resume from"})
             return
+        tail = ["--resume"] + _gate_argv()
+        # 零成本演示（mock）的重跑也必须是 mock：不带 --mock 的 --resume 会用真矩阵
+        # 做真实预检、把重跑的任务派给真 agent，悄悄花掉额度（2026-09-25 浏览器实测发现）
+        if any(e.get("run_id") == _run_meta.get("id") and e.get("mock") for e in _runs):
+            tail.append("--mock")
         try:
-            pid = _spawn_main_if_idle(["--resume"] + _gate_argv())
+            pid = _spawn_main_if_idle(tail)
         except OSError as e:
             self._reply(502, {"error": f"failed to start engine: {e}"[:300]})
             return
@@ -2495,6 +3997,69 @@ class Handler(SimpleHTTPRequestHandler):
             self._reply(409, {"error": _busy_error()})
             return
         self._reply(200, {"ok": True, "pid": pid})
+
+    def _handle_rollback(self, body: dict, undo: bool):
+        """POST /run/rollback {run, paths?} 和 POST /run/rollback/undo {run}
+        （change-safety-net.md §5.2、§5.3）。有运行在进行时拒绝；检查点库上的操作
+        跟会写的追问、看门狗、新运行轮流来（_checkpoint_lock）。"""
+        resolved = _resolve_run(str(body.get("run") or "")) if RUNTIME_DIR else None
+        if resolved is None:
+            self._reply(404, {"error": "run not found"})
+            return
+        rid, board_path, events_path = resolved
+        paths = body.get("paths")
+        if paths is not None and not (isinstance(paths, list)
+                                      and all(isinstance(p, str) for p in paths)):
+            self._reply(400, {"error": "paths must be a list of strings"})
+            return
+        if not _checkpoint_lock.acquire(blocking=False):
+            self._reply(409, {"error": "Agent Hub 正在记录文件改动（上一次运行收尾、追问或回滚），稍后再试"})
+            return
+        try:
+            if _run_busy():
+                self._reply(409, {"error": "有运行在进行，等它结束再回滚"})
+                return
+            board = _load_board(board_path)
+            if board is None:
+                self._reply(500, {"error": "这次运行的黑板读不了（文件可能损坏或正被占用），没有动任何文件"})
+                return
+            try:
+                run_changes.close_open(board, RUNTIME_DIR, rid, note=run_changes.LATE_NOTE,
+                                       author="system", exclude=(DATA_DIR,))
+            except Exception as e:
+                print(f"rollback: cannot close open segment for {rid}: {e}", file=sys.stderr)
+                self._reply(500, {"error": "这次运行的改动记录写不进去（黑板文件可能只读或磁盘满了），没有动任何文件"})
+                return
+            if undo:
+                result = run_changes.undo(board, RUNTIME_DIR)
+            else:
+                result = run_changes.rollback(board, RUNTIME_DIR, rid, paths,
+                                              exclude=(DATA_DIR,))
+        except run_changes.RollbackError as e:
+            self._reply(409, {"error": str(e)})
+            return
+        except Exception as e:
+            print(f"rollback: {rid} failed: {e}", file=sys.stderr)
+            self._reply(500, {"error": f"{'撤销' if undo else '回滚'}中途出错：{e}。部分文件可能已经恢复，但这次操作没有记下来"})
+            return
+        finally:
+            _checkpoint_lock.release()
+        try:
+            bus = EventBus(events_path)
+            bus.emit("run_rolled_back", restored=len(result["restored"]),
+                     skipped=len(result["skipped"]), undo=undo)
+            bus.close()
+        except Exception as e:
+            print(f"rollback: event not recorded for {rid}: {e}", file=sys.stderr)
+        try:
+            _runs_update(rid, rolled_back=run_changes.has_unreversed_rollback(board))
+        except Exception as e:
+            print(f"rollback: run index not updated for {rid}: {e}", file=sys.stderr)
+        if undo and result["error"]:
+            self._reply(500, {"ok": False, **result,
+                              "error": f"撤销中途出错：{result['error']}。已恢复的文件已记下，可以重试"})
+        else:
+            self._reply(200, {"ok": True, **result})
 
     def _handle_cancel(self, body: dict):
         """Kill the current run's WHOLE process group (main.py + every
@@ -2507,9 +4072,7 @@ class Handler(SimpleHTTPRequestHandler):
         if not _run_busy():
             self._reply(409, {"error": "no run in progress"})
             return
-        if _run_meta.get("cancel_flag") is not None:
-            _run_meta["cancel_flag"]["cancel_requested"] = True
-        if not _terminate_current_process_tree(_current) and _run_busy():
+        if not _cancel_current_run():
             self._reply(502, {"error": "failed to terminate the complete process tree"})
             return
         self._reply(200, {"ok": True})
@@ -2532,10 +4095,19 @@ class Handler(SimpleHTTPRequestHandler):
         if not isinstance(overrides, dict):
             self._reply(400, {"error": "overrides must be an object"})
             return
+        execution_options = body.get('execution_options', {})
+        if not isinstance(execution_options, dict):
+            self._reply(400, {'error': 'execution_options must be an object'})
+            return
         known_agents = _matrix_agent_names()
         for agent in overrides.values():
             if not isinstance(agent, str) or agent not in known_agents:
                 self._reply(400, {"error": f"unknown agent '{agent}'"})
+                return
+            try:
+                Router(MATRIX, workdir=WORKDIR, mock_all=True).require_agent_enabled(agent)
+            except (ValueError, KeyError) as exc:
+                self._reply(409, {'error': str(exc)})
                 return
         if not BOARD_PATH or not os.path.exists(BOARD_PATH):
             self._reply(404, {"error": "没有正在进行的运行"})
@@ -2568,10 +4140,45 @@ class Handler(SimpleHTTPRequestHandler):
             if previous is not None and previous_token == expected_token:
                 self._reply(409, {"error": f"权限门 {gate_id} 已经回答"})
                 return
+            normalized = {}
+            try:
+                if execution_options and (gate_id != 'plan' or decision != 'approve'):
+                    raise ValueError('execution options require a plan approval')
+                available = {a['name']: a for a in opened.get('available_agents', [])}
+                if gate_id == 'plan' and decision == 'approve' and 'available_agents' in opened:
+                    for tid, agent in overrides.items():
+                        if not isinstance(tid, str) or board.get(f'tasks/{tid}/spec') is None:
+                            raise ValueError('override requires a known task')
+                        if agent not in available:
+                            raise ValueError('selected agent is not available in this gate')
+                for tid, raw in execution_options.items():
+                    if not isinstance(tid, str) or tid not in overrides or board.get(f'tasks/{tid}/spec') is None:
+                        raise ValueError('execution options require a known, pinned task')
+                    meta = available.get(overrides[tid])
+                    if not meta:
+                        raise ValueError('selected agent is not available in this gate')
+                    opts = normalize_options(meta['kind'], raw)
+                    if opts.get('effort') and not meta.get('effort_supported'):
+                        raise ValueError('selected agent has no verified effort support')
+                    model = opts.get('model', meta.get('model', ''))
+                    caps = self._selection_caps(meta['kind'], model, meta.get('model_capabilities', {}))
+                    validate_effort({'effort': opts.get('effort', meta.get('effort', ''))}, caps)
+                    normalized[tid] = opts
+            except (ValueError, KeyError, TypeError) as exc:
+                self._reply(400, {'error': str(exc)})
+                return
             reply = {"decision": decision, "overrides": overrides}
+            if normalized:
+                reply['execution_options'] = normalized
             if expected_token:
                 reply["gate_token"] = expected_token
             board.put(f"run/gate_reply/{gate_id}", reply, author="user")
+        # 「取消」就是取消整个运行，跟 POST /cancel 走同一条路。只靠引擎读到
+        # 回复后跳过 PENDING 的话，已放行、正在跑的任务会一直跑完（bug B4）
+        if decision == "cancel" and _run_busy() and not _cancel_current_run():
+            self._reply(502, {"error": "已记下取消，但没能结束整棵进程树"
+                                       "——再点一次顶部的「取消」"})
+            return
         self._reply(200, {"ok": True})
 
     def _handle_chat_session_current(self):
@@ -2591,54 +4198,7 @@ class Handler(SimpleHTTPRequestHandler):
         except ValueError as exc:
             self._reply(400, {"error": str(exc)})
             return
-        try:
-            active = _active_session_id()
-            if not active:
-                self._reply(200, {"ok": True})   # 幂等：已经没有活跃会话
-                return
-            if active != sid:
-                # 另一个标签页已经开了新会话，这个请求来自过期的页面
-                self._reply(409, {"error": "another manager session is active",
-                                  "session_id": active})
-                return
-            if sid in _chat_inflight:
-                self._reply(409, {"error": "manager turn is still in progress"})
-                return
-            path = _session_path(sid)
-            if not _chat_lock.acquire(blocking=False):
-                self._reply(409, {"error": "manager turn is still in progress"})
-                return
-            locked_reply = None
-            try:
-                active = _active_session_id()
-                if not active:
-                    locked_reply = (200, {"ok": True})
-                elif active != sid:
-                    locked_reply = (409, {
-                        "error": "another manager session is active",
-                        "session_id": active,
-                    })
-                elif sid in _chat_inflight:
-                    locked_reply = (409, {
-                        "error": "manager turn is still in progress",
-                    })
-                elif path:
-                    try:
-                        os.unlink(path)
-                    except FileNotFoundError:
-                        pass
-                if locked_reply is None:
-                    _clear_active_session(sid)
-                    _sessions.pop(sid, None)
-                    _progress_reset(sid)
-            finally:
-                _chat_lock.release()
-            if locked_reply is not None:
-                self._reply(*locked_reply)
-                return
-            self._reply(200, {"ok": True})
-        except (SessionDataError, OSError) as e:
-            self._reply(500, {"error": str(e)})
+        self._reply(*_discard_manager_session(sid))
 
     def _handle_chat(self, body: dict):
         if not isinstance(body, dict):
@@ -2648,8 +4208,12 @@ class Handler(SimpleHTTPRequestHandler):
         if not message:
             self._reply(400, {"error": "need message"})
             return
-        if _run_busy():
+        if _run_busy() or _goal_owner() or _goals_stopping():
             self._reply(409, {"error": _busy_error()})
+            return
+        connection_error = _connection_start_error()
+        if connection_error:
+            self._reply(409, {'error': connection_error})
             return
         sid = str(body.get("session_id") or uuid.uuid4().hex[:12])
         try:
@@ -2667,7 +4231,7 @@ class Handler(SimpleHTTPRequestHandler):
             return
         turn_conflict = False
         try:
-            if _chat_inflight:
+            if _chat_inflight or _connection_inflight or _goal_owner() or _goals_stopping():
                 turn_conflict = True
             else:
                 _chat_inflight.add(sid)
@@ -2681,6 +4245,8 @@ class Handler(SimpleHTTPRequestHandler):
             self._handle_chat_locked(body, sid, message)
         except SessionConflict as exc:
             self._reply(409, {"error": str(exc), "session_id": sid})
+        except ValueError as exc:
+            self._reply(409, {'error': str(exc), 'session_id': sid})
         except (SessionDataError, OSError) as exc:
             self._reply(500, {"error": str(exc), "session_id": sid})
         finally:
@@ -2688,112 +4254,7 @@ class Handler(SimpleHTTPRequestHandler):
                 _chat_inflight.discard(sid)
 
     def _handle_chat_locked(self, body: dict, sid: str, message: str):
-        """Run one logically reserved turn without holding `_chat_lock`."""
-        sess, _created = _session_for_chat(sid)
-        router = _session_router(sess)
-        pinned_mgr = _apply_manager_pref(router)
-
-        staged = _session_stage(sess)
-        retrying_incomplete_turn = (
-            staged["history"] and staged["history"][-1].get("role") == "user" and
-            staged["history"][-1].get("text") == message)
-        if not retrying_incomplete_turn:
-            answers = _choice_answers(body.get("choice_answers"))
-            if staged["history"] and \
-                    staged["history"][-1].get("role") == "manager" and \
-                    staged["history"][-1].get("questions") and \
-                    not staged["history"][-1].get("answered"):
-                staged["history"][-1]["answered"] = True
-                staged["history"][-1]["answers"] = answers
-            staged["history"].append({"role": "user", "text": message,
-                                      "ts": round(time.time(), 3)})
-
-            correcting = (staged["awaiting_confirmation"] and
-                          not manager.is_confirmation(message))
-            if correcting:
-                staged["awaiting_confirmation"] = False
-            _session_save(staged)
-            _sessions[sid] = staged
-            sess = staged
-
-        # 每轮只展示这一轮的进度，不累积历史
-        _progress_reset(sid)
-
-        if sess["awaiting_confirmation"]:
-            if manager.is_confirmation(message):
-                p = sess["proposal"]
-                try:
-                    pid, run_id = _spawn_manager_main_if_idle([
-                        f"--goal={p['goal']}",
-                        f"--constraints={p['constraints']}",
-                    ] + _gate_argv())
-                except OSError as e:
-                    self._reply(502, {"error": f"failed to start engine: {e}"[:300],
-                                      "session_id": sid})
-                    return
-                if pid is None:
-                    self._reply(409, {"error": _busy_error(),
-                                      "session_id": sid})
-                    return
-                cost = sess["cost_usd"]
-                warning = _archive_manager_session(sess, run_id)
-                response = {"status": "started", "pid": pid,
-                            "session_id": sid, "manager_cost_usd": cost}
-                if warning:
-                    response["persistence_warning"] = warning[:300]
-                self._reply(200, response)
-                return
-
-        force = (manager.should_force_start(message)
-                 or sess["questions"] >= manager.MANAGER_MAX_TURNS)
-        try:
-            step = asyncio.run(manager.manager_step(
-                sess["history"], router, WORKDIR, force_finish=force,
-                on_event=_progress_sink(sid)))
-        except RuntimeError as e:
-            error = str(e)
-            if pinned_mgr:
-                error = (f"你指定的经理 {pinned_mgr} 不可用（{error}）——"
-                         f"换一个，或把经理改回『自动』")
-            self._reply(502, {"error": error, "session_id": sid,
-                              "pinned_manager": pinned_mgr})
-            return
-        staged = _session_stage(sess)
-        staged["cost_usd"] += step.get("_cost_usd", 0.0)
-
-        if step["status"] == "asking" and not force:
-            staged["questions"] += 1
-            questions = step.get("questions") or []
-            staged["history"].append({
-                "role": "manager", "text": step["question"],
-                "ts": round(time.time(), 3), "questions": questions,
-                "answered": False, "answers": {},
-            })
-            _session_save(staged)
-            _sessions[sid] = staged
-            self._reply(200, {"status": "asking", "question": step["question"],
-                              "questions": questions,
-                              "session_id": sid,
-                              "manager_cost_usd": staged["cost_usd"]})
-            return
-        if step["status"] == "asking":   # forced but still asking: mirror CLI behavior
-            self._reply(502, {"error": "manager kept asking after being told to finalize",
-                              "session_id": sid})
-            return
-        staged["proposal"] = {"goal": step["goal"],
-                              "constraints": step.get("constraints", "")}
-        staged["awaiting_confirmation"] = True
-        proposal_text = ("确认一下——\n目标：" + staged["proposal"]["goal"] +
-                         "\n约束：" +
-                         (staged["proposal"]["constraints"] or "（无）") +
-                         "\n没问题回复“对/开始”；要改的话直接说哪里不对。")
-        staged["history"].append({"role": "manager", "text": proposal_text,
-                                  "ts": round(time.time(), 3)})
-        _session_save(staged)
-        _sessions[sid] = staged
-        self._reply(200, {"status": "confirm", "session_id": sid,
-                          "manager_cost_usd": staged["cost_usd"],
-                          **staged["proposal"]})
+        self._reply(*_manager_turn(body, sid, message))
 
     def _handle_task_message(self, task_id: str, body: dict):
         if not task_id or "/" in task_id:
@@ -2809,7 +4270,18 @@ class Handler(SimpleHTTPRequestHandler):
         # its turn rather than racing the blackboard, no new error shape
         # for the frontend to special-case.
         with _lock_for_task(task_id):
-            board = _board_with_task(task_id)
+            if 'run_id' in body:
+                rid = body['run_id']
+                try:
+                    path = os.path.join(os.path.dirname(_run_manager_archive_path(rid)), 'blackboard.jsonl')
+                    if os.path.islink(path) or not os.path.isfile(path):
+                        raise ValueError('运行记录不存在')
+                    board = Blackboard(path, on_write=None)
+                except (ValueError, SessionDataError, OSError):
+                    self._reply(404, {'error': '指定运行不存在或不可读'})
+                    return
+            else:
+                board = _board_with_task(task_id)
             if board is None or board.get(f"tasks/{task_id}/spec") is None:
                 self._reply(404, {"error": f"task '{task_id}' not found"})
                 return
@@ -2819,32 +4291,77 @@ class Handler(SimpleHTTPRequestHandler):
                 # session has already returned and will never look at the
                 # inbox again, so it's safe to resume it directly here and
                 # answer synchronously (unchanged from the original MVP).
-                router = Router(MATRIX, workdir=WORKDIR)
+                # B13：在那次运行自己的工作目录里继续，不是现在设置的那个
+                workdir = board.get("run/workdir") or WORKDIR
+                if not os.path.isdir(workdir):
+                    self._reply(409, {"error": f"这次运行的工作目录已经不在了（{workdir}），追问要在原目录里继续"})
+                    return
                 try:
-                    result, compacted = asyncio.run(
-                        conversation.continue_task_conversation(
-                            task_id, message, router, board))
+                    # getattr：测试桩 Router 没有 can_write，当只读（跟引擎里一样）
+                    with _connection_call():
+                        if CONFIG_PATH:
+                            with _settings_lock, _api_store().locked():
+                                connection_error = _connection_start_error()
+                                if connection_error:
+                                    raise _Blocked(connection_error, status=409)
+                                _write_merged_matrix()
+                        router = Router(MATRIX, workdir=workdir)
+                        if CONFIG_PATH and callable(getattr(router, 'bind_api_store', None)):
+                            router.bind_api_store(_api_store())
+                            router.bind_paid_ledger(_followup_paid_ledger(board, router.budget.get('max_usd_per_run', 2.0)))
+                        check = getattr(router, 'require_agent_enabled', None)
+                        if callable(check):
+                            try:
+                                check(board.get(f'tasks/{task_id}/agent') or '')
+                            except (ValueError, KeyError) as exc:
+                                raise _Blocked(str(exc), status=409) from exc
+                        can_write = getattr(router, "can_write", None)
+                        writes = (bool(can_write(board.get(f"tasks/{task_id}/agent") or ""))
+                                  if callable(can_write) else False)
+                        with _followup_checkpoint(board, task_id, workdir, writes) as checkpoint:
+                            result, compacted = asyncio.run(
+                                conversation.continue_task_conversation(
+                                    task_id, message, router, board))
+                        _record_followup_api_cost(board, task_id, router)
+                except _Blocked as e:
+                    self._reply(e.status, {"error": str(e)})
+                    return
                 except conversation.ConversationError as e:
                     self._reply(404, {"error": str(e)})
                     return
+                except InspectionConflict as exc:
+                    self._reply(409, {'error': str(exc)})
+                    return
+                except Exception as e:
+                    print(f"follow-up {task_id} failed: {e!r}", file=sys.stderr)
+                    self._reply(502, {"error": str(e)[:300]})
+                    return
                 if not result.ok:
                     self._reply(502, {"error": result.error or "agent call failed",
+                                      "cost_complete": _paid_complete(router),
                                       "cost_usd": round(result.cost_usd, 4)})
                     return
                 # this reply just became tasks/{id}/output's new version --
                 # any already-DONE task that reads it downstream may now be
                 # holding a stale answer. Detection+notification only (see
                 # mark_stale_dependents' docstring); no auto-rerun.
-                stale = conversation.mark_stale_dependents(board, task_id)
-                if stale:
-                    bus = EventBus(EVENTS_PATH)
-                    for dep_id in stale:
-                        bus.emit("task_stale", task_id=dep_id, cause_task_id=task_id)
-                    bus.close()
+                stale = []
+                warning = (f"这次追问不能一键回滚：{checkpoint['reason']}"
+                           if checkpoint and not checkpoint["on"] else "")
+                try:
+                    stale = conversation.mark_stale_dependents(board, task_id)
+                    if stale:
+                        with contextlib.closing(EventBus(_board_events_path(board))) as bus:
+                            for dep_id in stale:
+                                bus.emit("task_stale", task_id=dep_id, cause_task_id=task_id)
+                except Exception as e:
+                    print(f"follow-up {task_id} stale notification failed: {e!r}", file=sys.stderr)
+                    warning += " 追问已完成，但后续任务状态更新失败，请刷新查看。"
                 self._reply(200, {"reply": result.output,
+                                  "cost_complete": _paid_complete(router),
                                   "cost_usd": round(result.cost_usd, 4),
                                   "compacted": compacted,
-                                  "stale_downstream": stale})
+                                  "stale_downstream": stale, "warning": warning})
                 return
 
             # Not done yet: a live Engine process may still own this task's
@@ -2869,32 +4386,223 @@ class Handler(SimpleHTTPRequestHandler):
         # Two traps (brief 1.6): never call srv.shutdown() from the request
         # thread that serve_forever() is waiting on (deadlock), and never
         # wait unbounded on a run that may be parked in AWAITING_INPUT.
-        if _run_busy():
-            self._reply(409, {"error": "a run is in progress -- finish or terminate it first"})
-            return
+        with _settings_lock, _spawn_lock, _chat_lock:
+            if _checkpoint_lock.locked():
+                self._reply(409, {"error": _busy_error()})
+                return
+            if _run_busy() or _chat_inflight or _connection_inflight:
+                self._reply(409, {"error": "a run or manager turn is in progress -- finish it first"})
+                return
+            if _goal_stop is not None:
+                _goal_stop.set()
         self._reply(200, {"ok": True})
         if SERVER is not None:
             threading.Thread(target=SERVER.shutdown, daemon=True).start()
 
+    def _api_connections_public(self):
+        state = _api_store().snapshot()
+        proposal = _api_migration_proposal()
+        state['migration'] = {key: public_connection(item, True) for key, item in proposal['items'].items()}
+        cached = _load_yaml_dict(os.path.join(RUNTIME_DIR, 'api-connection-tests.json'))
+        prefs = _load_config().get('ui_prefs', {})
+        for key, item in state['items'].items():
+            item['impact'] = {'roles': item['roles'], 'manager': prefs.get('manager_agent') == item['agent_id']}
+            if cached.get('id') == key and cached.get('revision') == state['revision']:
+                item['verified'] = cached.get('ok') is True
+                item['test_result'] = cached
+        return state
+
+    def _handle_api_connections(self):
+        try:
+            with _settings_lock:
+                state = self._api_connections_public()
+            self._reply(200, state)
+        except (ValueError, TypeError):
+            self._reply(409, {'error': '连接配置不可读，请检查配置文件；原文件已保留'})
+        except OSError:
+            self._reply(500, {'error': '无法读取连接，请检查数据目录权限'})
+
+    @_settings_locked
+    def _handle_save_api_connection(self, body):
+        with _spawn_lock, _chat_lock:
+            if _run_busy() or _chat_inflight or _connection_inflight or _checkpoint_lock.locked():
+                self._reply(409, {'error': '正在运行，请结束当前任务或经理请求后重试'})
+                return
+            try:
+                store = _api_store()
+                store.publisher = _write_merged_matrix
+                state = store.raw_snapshot()
+                deleting = self.path.endswith('/delete')
+                migrating = self.path.endswith('/migrate')
+                fields = {'id', 'revision'} if deleting else {'revision', 'confirm'} if migrating else {'connection', 'expected_revision', 'key_action', 'key_value'}
+                if set(body) != fields:
+                    raise ValueError('连接请求字段无效')
+                revision = body.get('revision') if deleting or migrating else body.get('expected_revision')
+                if type(revision) is not int:
+                    raise ValueError('配置版本无效')
+                if revision != state['revision']:
+                    self._reply(409, {'error': '配置已更新，请关闭并重新打开接入窗口'})
+                    return
+                if deleting:
+                    if not isinstance(body['id'], str):
+                        raise ValueError('连接标识无效')
+                    store.delete(body['id'], revision)
+                elif migrating:
+                    if body['confirm'] is not True:
+                        raise ValueError('请确认导入已有连接')
+                    store.import_legacy(_api_migration_proposal(), revision)
+                else:
+                    item = body['connection']
+                    if not isinstance(item, dict):
+                        raise ValueError('连接格式无效')
+                    item = dict(item)
+                    if 'id' not in item and 'agent_id' not in item:
+                        item['id'] = item['agent_id'] = 'api-' + uuid.uuid4().hex
+                    elif not isinstance(item.get('id'), str) or item['id'] not in state['items']:
+                        raise ValueError('新连接标识由服务端生成')
+                    store.save(item, body['key_action'], body['key_value'], revision)
+                self._reply(200, self._api_connections_public())
+            except (ValueError, TypeError) as exc:
+                conflict = '配置已更新' in str(exc) or '正在保存' in str(exc)
+                self._reply(409 if conflict else 400, {'error': str(exc)})
+            except OSError:
+                self._reply(500, {'error': '保存失败，请检查数据目录权限后刷新；密钥不会回显'})
+
+    def _handle_api_connection_test(self, body: dict):
+        if (set(body) != {'id', 'revision', 'confirm_cost'} or body.get('confirm_cost') is not True
+                or type(body.get('revision')) is not int or not isinstance(body.get('id'), str)):
+            self._reply(400, {'error': '请明确确认本次测试可能消耗 API 额度'})
+            return
+        try:
+            with _connection_call():
+                with _settings_lock:
+                    if _run_busy() or _chat_inflight:
+                        self._reply(409, {'error': '正在运行，请稍后测试连接'})
+                        return
+                    store = _api_store()
+                    state = store.raw_snapshot()
+                    if body['revision'] != state['revision']:
+                        self._reply(409, {'error': '连接已更新，请刷新后测试'})
+                        return
+                    if body['id'] not in state['items']:
+                        self._reply(404, {'error': '连接不存在'})
+                        return
+                    connection = dict(state['items'][body['id']])
+                    connection['max_output_tokens'] = min(16, connection['max_output_tokens'])
+                    limit = _load_yaml_dict(MATRIX).get('budget', {}).get('max_usd_per_run', 2.0)
+                    ledger = PaidLedger(limit)
+                executor = BudgetedApiExecutor(ApiExecutor(connection, store.resolve_secret, stream=False), lambda: ledger)
+                probe = Task(id='_api_test', title='connection test', type=TaskType.LIGHT,
+                             prompt='Reply with exactly: ok')
+                result = asyncio.run(executor.run(probe, ''))
+                public = {'id': body['id'], 'revision': state['revision'], 'ok': result.ok,
+                          'error': result.error, 'cost_usd': result.cost_usd,
+                          'cost_status': (result.usage or {}).get('cost_status', 'unknown'),
+                          'cost_complete': not ledger.snapshot()['unknown']}
+                path = os.path.join(RUNTIME_DIR, 'api-connection-tests.json')
+                with _settings_lock:
+                    _atomic_write(path, json.dumps(public, ensure_ascii=False), mode=0o600)
+                self._reply(200, public)
+        except InspectionConflict as exc:
+            self._reply(409, {'error': str(exc)})
+        except (ValueError, TypeError):
+            self._reply(400, {'error': '连接配置不可用，请刷新接入设置'})
+        except OSError:
+            self._reply(500, {'error': '连接测试记录保存失败，请检查数据目录'})
+
     def _handle_preflight(self, body: dict):
-        """One-time REAL probe of every configured agent (a few tokens each)
-        -- the desktop version of CLAUDE.md §4's lesson: structural
-        unavailability (wrong model for the account) looks fine to an
-        existence probe but fails every task that reaches it."""
+        """Compatibility route: one explicit target and fee confirmation only."""
         if _run_busy():
             self._reply(409, {"error": _busy_error()})
             return
-        try:
-            results = asyncio.run(_real_preflight())
-        except Exception as e:
-            self._reply(502, {"error": f"preflight failed: {e}"[:500]})
+        connection_error = _connection_start_error()
+        if connection_error:
+            self._reply(409, {'error': connection_error})
             return
-        if PREFLIGHT_PATH:
-            _atomic_write(PREFLIGHT_PATH,
-                          json.dumps({"ts": round(time.time(), 3),
-                                      "results": results}, ensure_ascii=False))
-        self._reply(200, {"results": results})
+        # An old empty request must never silently run every configured model.
+        self._handle_local_model_test(body)
 
+    def _handle_local_model_test(self, body):
+        global _connection_inflight
+        claimed = False
+        lock = None
+        try:
+            fields = {'kind', 'model', 'source', 'revision', 'fingerprint', 'confirm_cost'}
+            if set(body) != fields or type(body.get('confirm_cost')) is not bool or not body['confirm_cost']:
+                raise ValueError('确认费用后才能测试一个明确的模型')
+            kind, model, source = body['kind'], body['model'], body['source']
+            if kind not in LOCAL_KINDS or source not in ('catalog', 'configured', 'manual', 'runtime_default'):
+                raise ValueError('目标 Agent 或模型来源无效')
+            normalize_options(kind, {'model': model})
+            if (source == 'runtime_default') != (model == ''):
+                raise ValueError('默认模式与模型 ID 不一致')
+            if type(body['revision']) is not int or not isinstance(body['fingerprint'], str):
+                raise ValueError('配置版本无效')
+            lock = _inspection_locks[kind]
+            if not lock.acquire(blocking=False):
+                lock = None
+                raise InspectionConflict('此 Agent 正在检查或测试，请稍后重试')
+            with _settings_lock, _spawn_lock, _chat_lock:
+                cfg = _strict_config()
+                argv, revision, fingerprint, _ = _inspection_identity(kind, cfg)
+                if body['revision'] != revision or body['fingerprint'] != fingerprint:
+                    raise InspectionConflict('配置已更新，请刷新后重新确认测试')
+                snapshot = _inspection_snapshot(kind, cfg)
+                if source == 'catalog' and model not in {r['id'] for r in snapshot['catalog']['models']}:
+                    raise ValueError('模型不在当前读取目录中，请刷新或手动添加')
+                if source == 'configured' and model not in snapshot['configured_models']:
+                    raise ValueError('当前未配置此模型')
+                if (_goals_stopping() or _goal_owner() or _run_busy() or _chat_inflight or
+                        _connection_inflight or _checkpoint_lock.locked()):
+                    raise InspectionConflict('正在运行，请结束当前任务或请求后重试')
+                _connection_inflight += 1
+                claimed = True
+            execution_error = False
+            try:
+                raw = asyncio.run(run_model_probe(kind, argv, model))
+            except Exception:
+                execution_error = True
+                raw = {'ok': False, 'usage': {}, 'cost_status': 'unknown'}
+            result = public_probe_result(raw, model)
+            # Specific safe adapter errors are local fixed messages, not CLI text.
+            if not result['ok'] and raw.get('error') in (
+                    '当前自定义工具或认证配置无法安全关闭，请在原 Agent 中测试',
+                    '工具版本未提供安全测试所需选项，请在原 Agent 中测试',
+                    '模型测试失败或超时，请重试'):
+                result['error'] = raw['error']
+            with _settings_lock:
+                cfg = _strict_config()
+                _, current, current_fingerprint, _ = _inspection_identity(kind, cfg)
+                if current != revision or current_fingerprint != fingerprint:
+                    raise InspectionConflict('配置已更新，测试结果未写入新配置')
+                snapshot = _inspection_snapshot(kind, cfg)
+                record = {**result, 'status': 'passed' if result['ok'] else 'failed', 'tested_at': time.time()}
+                record.pop('ok', None)
+                for result_source in (('runtime_default',) if source == 'runtime_default' else ('catalog', 'configured', 'manual')):
+                    key = json.dumps([result_source, model], separators=(',', ':'))
+                    snapshot['tests'][key] = dict(record)
+                cache = _inspection_cache()
+                cache[kind] = snapshot
+                _atomic_write(os.path.join(RUNTIME_DIR, 'local-agent-metadata.json'),
+                              json.dumps(cache, ensure_ascii=False), mode=0o600)
+            self._reply(502 if execution_error else 200,
+                        {**result, 'inspection': snapshot, 'tested_at': record['tested_at']})
+        except InspectionConflict as exc:
+            self._reply(409, {'error': str(exc)})
+        except (TypeError, ValueError):
+            self._reply(400, {'error': '请确认费用并选择当前配置中的单个模型'})
+        except OSError:
+            self._reply(500, {'error': '无法保存测试结果，请检查数据目录权限'})
+        except Exception:
+            self._reply(502, {'error': '模型测试失败，请重试或在原 Agent 中检查'})
+        finally:
+            if claimed:
+                with _settings_lock:
+                    _connection_inflight -= 1
+            if lock:
+                lock.release()
+
+    @_settings_locked
     def _handle_settings_config(self, body: dict):
         """Both fields are validated BEFORE anything is persisted: whatever
         lands in config.yaml is deep-merged into the capability matrix that
@@ -2951,11 +4659,69 @@ class Handler(SimpleHTTPRequestHandler):
                     self._reply(400, {"error": f"unknown agent '{value}'"})
                     return
                 merged[key] = value
+            for field, choices in (('manager_model_mode', ('inherit','runtime','explicit')),
+                                   ('manager_effort_mode', ('inherit','default','explicit'))):
+                if merged.get(field, 'inherit') not in choices:
+                    self._reply(400, {'error': f'invalid {field}'})
+                    return
+            if not merged.get('manager_agent'):
+                merged.update(manager_model='', manager_effort='',
+                              manager_model_mode='inherit', manager_effort_mode='inherit')
+            else:
+                try:
+                    router = Router(MERGED_MATRIX_PATH if MERGED_MATRIX_PATH and os.path.exists(MERGED_MATRIX_PATH) else MATRIX, workdir=WORKDIR, mock_all=True)
+                    kind = router.kind(merged['manager_agent'])
+                    options = _manager_execution_options(merged)
+                    normalize_options(kind, options)
+                    effective = router.resolved_options(merged['manager_agent'], options)
+                    validate_effort(effective, self._selection_caps(kind, effective['model'], router.agent_metadata(merged['manager_agent']).get('model_capabilities', {})))
+                    for field in ('model', 'effort'):
+                        if merged.get('manager_'+field+'_mode') == 'explicit' and not options.get(field):
+                            raise ValueError(f'explicit {field} must not be empty')
+                    if options.get('effort') and not router.agent_metadata(merged['manager_agent'])['effort_supported']:
+                        raise ValueError('installed manager has no verified effort support')
+                except (ValueError, KeyError, OSError, yaml.YAMLError) as exc:
+                    self._reply(400, {'error': str(exc)})
+                    return
             cfg["ui_prefs"] = merged
         _save_config(cfg)
         _write_merged_matrix()
         budget = float((cfg.get("budget") or {}).get("max_usd_per_run", 2.0))
         self._reply(200, {"ok": True, "budget": budget})
+
+    @_settings_locked
+    def _handle_agent_options(self, body: dict):
+        if not CONFIG_PATH:
+            self._reply(400, {'error': 'no data directory configured'})
+            return
+        try:
+            router = Router(MERGED_MATRIX_PATH if MERGED_MATRIX_PATH and os.path.exists(MERGED_MATRIX_PATH) else MATRIX,
+                            workdir=WORKDIR, mock_all=True)
+            name = body.get('agent')
+            spec = router.profile_spec(name)
+            options = normalize_options(spec['kind'], body.get('options'))
+            effective = router.resolved_options(name, options)
+            validate_effort(effective, self._selection_caps(spec['kind'], effective['model'], router.agent_metadata(name).get('model_capabilities', {})))
+            if options.get('effort') and not router.agent_metadata(name)['effort_supported']:
+                raise ValueError('installed agent has no verified effort support')
+        except (KeyError, TypeError, ValueError, OSError, yaml.YAMLError) as exc:
+            self._reply(400, {'error': str(exc)})
+            return
+        cfg = _load_config()
+        patch = cfg.setdefault('matrix_patch', {})
+        if not isinstance(patch, dict):
+            patch = cfg['matrix_patch'] = {}
+        agents = patch.setdefault('agents', {})
+        if not isinstance(agents, dict):
+            agents = patch['agents'] = {}
+        profile = agents.setdefault(name, {})
+        if not isinstance(profile, dict):
+            profile = agents[name] = {}
+        for key, value in options.items():
+            profile['reasoning_effort' if key == 'effort' else key] = value
+        _save_config(cfg)
+        _write_merged_matrix()
+        self._reply(200, {'ok': True})
 
     def _handle_settings_credentials(self, body: dict):
         if not CREDENTIALS_PATH:
@@ -2966,7 +4732,14 @@ class Handler(SimpleHTTPRequestHandler):
             updates["DEEPSEEK_API_KEY"] = str(body["deepseek"] or "")
         if "openrouter" in body:
             updates["OPENROUTER_API_KEY"] = str(body["openrouter"] or "")
-        _credentials_write(updates)
+        try:
+            _credentials_write(updates)
+        except ValueError:
+            self._reply(409, {'error': '凭据配置不可读或正在保存，请检查后重试'})
+            return
+        except OSError:
+            self._reply(500, {'error': '凭据保存失败，请检查数据目录权限'})
+            return
         creds = _credentials_read()
         self._reply(200, {"ok": True,
                           "deepseek": bool(os.environ.get("DEEPSEEK_API_KEY")
@@ -3030,6 +4803,13 @@ def _open_gate_id() -> str:
 
 
 def _busy_error() -> str:
+    if _connection_inflight:
+        return '正在测试连接或处理追问，请结束当前请求后重试'
+    if not _run_busy():
+        # 没有运行在跑却被拒了：只可能是 serve.py 自己占着检查点锁（看门狗在给刚结束的
+        # 运行收尾，或追问、回滚在改文件）。必须放在门那一条之前：POST /cancel 会让卡在
+        # 门上的运行把门永远留在没人回复的状态，不能拿一个已经结束的运行的门当理由
+        return "Agent Hub 正在记录文件改动（上一次运行收尾、追问或回滚），等它结束再试"
     gate_id = _open_gate_id()
     if gate_id:
         return (f"当前运行正卡在权限确认上（{gate_id}）—— 先在对话里放行或取消它，"
@@ -3041,7 +4821,9 @@ def _board_with_task(task_id: str):
     """Find the run whose blackboard knows this task: current run first,
     then older runs newest-first. Lets /file previews and follow-ups
     survive later runs (each run owns its own blackboard now)."""
-    board = Blackboard(BOARD_PATH, on_write=lambda e: None)
+    board = _load_board(BOARD_PATH)
+    if board is None:
+        return None
     if board.get(f"tasks/{task_id}/spec") is not None or \
             board.get(f"tasks/{task_id}/files") is not None:
         return board
@@ -3050,11 +4832,81 @@ def _board_with_task(task_id: str):
             p = os.path.join(RUNS_DIR, entry.get("run_id", ""), "blackboard.jsonl")
             if p == BOARD_PATH or not os.path.exists(p):
                 continue
-            b = Blackboard(p, on_write=lambda e: None)
+            b = _load_board(p)
+            if b is None:
+                return None
             if b.get(f"tasks/{task_id}/spec") is not None or \
                     b.get(f"tasks/{task_id}/files") is not None:
                 return b
     return None
+
+
+class _Blocked(Exception):
+    """A request refused before anything ran; .status is the HTTP code."""
+
+    def __init__(self, message: str, status: int = 409):
+        super().__init__(message)
+        self.status = status
+
+
+def _board_run_id(board) -> str:
+    """Run id of a run-directory blackboard ("" outside desktop mode)."""
+    if not RUNS_DIR:
+        return ""
+    run_dir = os.path.dirname(os.path.realpath(board.path))
+    if os.path.dirname(run_dir) != os.path.realpath(RUNS_DIR):
+        return ""
+    return os.path.basename(run_dir)
+
+
+@contextlib.contextmanager
+def _followup_checkpoint(board, task_id: str, workdir: str, writes: bool):
+    """会写的追问在引擎外改文件：新开一段拍前后检查点（change-safety-net.md
+    §3.2），并全程占着 _checkpoint_lock —— 两个会写的追问、追问和回滚不会同时
+    动一个库，追问没结束也不会开新运行。锁被占或有运行在进行时返回 409
+    （§4 末条）；begin 失败时不运行 agent，返回 500；end 失败只记日志。只读
+    的追问直接放行。"""
+    if not writes:
+        yield None
+        return
+    if not _checkpoint_lock.acquire(blocking=False):
+        raise _Blocked("Agent Hub 正在记录文件改动（上一次运行收尾、追问或回滚），稍后再追问")
+    try:
+        board.refresh()
+        if _run_busy():
+            raise _Blocked("有运行在进行，等它结束再追问")
+        seg = None
+        status = {"on": False, "reason": "这次运行没有检查点"}
+        run_id = _board_run_id(board)
+        if RUNTIME_DIR and run_id:
+            try:
+                seg, status = run_changes.begin(
+                    board, checkpoints.store_path(RUNTIME_DIR, workdir), workdir, run_id,
+                    "followup", "system", task_id=task_id, exclude=(DATA_DIR,))
+            except Exception as e:
+                print(f"followup checkpoint begin failed (run {run_id}, task {task_id}): {e!r}",
+                      file=sys.stderr)
+                raise _Blocked("这次运行的改动记录写不进去（黑板文件可能只读或磁盘满了），没有动任何文件",
+                               status=500) from None
+        try:
+            yield status
+        finally:
+            if seg is not None:
+                try:
+                    run_changes.end(board, seg, author="system")
+                except Exception as e:
+                    print(f"followup checkpoint end failed (run {run_id}, task {task_id}): {e!r}",
+                          file=sys.stderr)
+    finally:
+        _checkpoint_lock.release()
+
+
+def _load_board(path):
+    try:
+        return Blackboard(path, on_write=lambda e: None)
+    except Exception as e:
+        print(f"review: cannot read blackboard {path}: {e}", file=sys.stderr)
+        return None
 
 
 def _probe_agents() -> list[dict]:
@@ -3072,7 +4924,7 @@ def _probe_agents() -> list[dict]:
     dsh = _dsh_cmd(None)
     out.append({"id": "dsh", "label": "DeepSeek Harness (dsh)", "kind": "dsh",
                 "available": bool(dsh),
-                "detail": (dsh[0] if dsh else
+                "detail": (dsh[-1] if dsh else
                            "未检测到 dsh —— npm i -g @deepseek-ai/dsh")})
     node, script = _resolve_codebuddy_paths(None, None)
     cb_ok = bool(node and script)
@@ -3086,6 +4938,14 @@ def _probe_agents() -> list[dict]:
                 "available": bool(codex_cmd),
                 "detail": ("codex exec（复用 ChatGPT 登录；workspace-write 沙箱）"
                            if codex_cmd else "未检测到 codex —— npm i -g @openai/codex")})
+    # 改动安全网靠 git 拍检查点（change-safety-net.md §5.4）。只报装没装、装在哪：
+    # 这个探测约定不起子进程（test_probe_agents_zero_subprocess 守着），读不到版本
+    git = _cli_which("git")
+    out.append({"id": "git", "label": "git（改动检查点）", "kind": "git",
+                "available": bool(git),
+                "detail": (git if git else
+                           "未检测到 git —— 没有它就不能审阅、回滚运行改的文件："
+                           "https://git-scm.com/downloads")})
     return out
 
 
@@ -3110,7 +4970,7 @@ async def _real_preflight() -> dict:
 
 
 def _main() -> None:
-    global SERVER
+    global SERVER, _goal_stop
     ap = argparse.ArgumentParser(description="Agent Hub local server")
     ap.add_argument("--port", type=int, default=8787)
     ap.add_argument("--data-dir", default=None,
@@ -3119,10 +4979,16 @@ def _main() -> None:
                     help="project name, isolates runs per project (default: default)")
     args = ap.parse_args()
     _configure(args.data_dir, args.project, args.port)
+    _goal_stop = threading.Event()
+    try:
+        _goal_recover()
+    except (GoalDataError, SessionDataError, OSError):
+        print('[goals] 队列记录无法恢复，原文件已保留，请检查目标列表')
     # best-effort scheduler lives only in the real entry point -- NOT in
     # _configure(), which tests call directly and repeatedly; a stray real
     # timer thread there would leak across every test in the process
     threading.Thread(target=_schedule_loop, daemon=True).start()
+    threading.Thread(target=_goal_loop, args=(_goal_stop,), daemon=True).start()
     print(f"Agent Hub -> http://localhost:{PORT}/dashboard.html")
     print(f"data: {RUNTIME_DIR}")
     SERVER = ThreadingHTTPServer(("127.0.0.1", PORT), Handler)

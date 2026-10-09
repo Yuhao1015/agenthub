@@ -22,7 +22,7 @@ class _FakeProc:
         self._stdout = stdout
         self.returncode = returncode
 
-    async def communicate(self):
+    async def communicate(self, input=None):
         return self._stdout, b""
 
 

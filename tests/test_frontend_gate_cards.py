@@ -75,7 +75,10 @@ def test_preference_writes_are_serialized_before_work_starts():
 
 def test_sending_waits_once_and_can_retry_failed_preferences():
     src = _src()
-    assert 'S.busy&&S.mode==="live")||S.sendPending' in src, \
+    # 契约：标记 sendPending 之前，已在发送中就直接返回（原来钉死的是整行
+    # 旧写法；运行中放行 @追问 之后那一行拆成了两道闸，bug B8）
+    send = src[src.index("async function sendPrompt(){"):]
+    assert "S.sendPending)return;" in send[:send.index("S.sendPending=true")], \
         "等待偏好保存时没有同步防止重复发送"
     assert "S.sendPending=true" in src and "S.sendPending=false" in src, \
         "sendPending 没有覆盖完整发送生命周期"
@@ -95,9 +98,9 @@ def test_sending_waits_for_latest_preferences_and_locks_shortcuts():
     for selector in ("#sw-manager", "#sw-assign", "#sw-gate"):
         assert f'"{selector}"' in controls.group(1), \
             f"发送期间仍能修改 {selector}"
-    send_text = re.search(r"function sendText\(t\)\{(.*?)\}", src, re.S)
-    assert send_text and "setPromptText" in send_text.group(1), \
-        "重跑快捷入口会在发送期间覆盖输入框"
+    # 原来这里还断言 sendText() 走 setPromptText：那是「重跑」按钮把文字塞进
+    # 输入框再发给经理的旧路（bug B6）。重跑现在直接 POST /rerun，不再碰输入框，
+    # 剩下的程序化写输入框由下一个测试统一看住。
 
 
 def test_sending_locks_prompt_and_choice_submission():
@@ -106,16 +109,16 @@ def test_sending_locks_prompt_and_choice_submission():
     assert controls and '"#prompt"' in controls.group(1), \
         "旧发送等待期间的新输入会被稍后的清空动作吞掉"
     submit = re.search(r"function submitChoices\(card\)\{(.*?)\n\}", src, re.S)
-    assert submit and "S.sendPending" in submit.group(1), \
+    assert submit and "draftLocked()" in submit.group(1), \
         "选择题提交会在发送期间覆盖输入并冻结卡片"
-    assert submit.group(1).index("S.sendPending") < submit.group(1).index("const lines"), \
+    assert submit.group(1).index("draftLocked()") < submit.group(1).index("const lines"), \
         "选择题防重入必须发生在任何卡片状态修改前"
 
 
 def test_all_programmatic_prompt_writes_share_pending_guard():
     src = _src()
     helper = re.search(r"function setPromptText\(text\)\{(.*?)\n\}", src, re.S)
-    assert helper and "S.sendPending" in helper.group(1), \
+    assert helper and "draftLocked()" in helper.group(1), \
         "程序化写输入框没有统一经过 pending 防护"
     assert '$("#prompt").value="@"+c.task' not in src, \
         "失败卡片追问入口仍绕过统一输入 helper"
@@ -123,11 +126,10 @@ def test_all_programmatic_prompt_writes_share_pending_guard():
         "任务追问入口仍绕过统一输入 helper"
     new_start = src.index('$("#new-btn").onclick=()=>{')
     new_body = src[new_start:src.index("function setPromptText", new_start)]
-    assert "S.sendPending" in new_body, \
-        "发送期间仍能重置为新对话"
+    assert "GoalQueue.newDraft()" in new_body, "新目标应当创建独立草稿"
     controls = re.search(r"const DRAFT_CONTROLS=\[(.*?)\];", src)
-    assert controls and '"#new-btn"' in controls.group(1), \
-        "发送期间新对话按钮没有禁用"
+    assert controls and '"#new-btn"' not in controls.group(1), \
+        "目标排队时新目标仍被全局发送锁禁用"
 
 
 def test_picker_has_sprite_and_fallback_hover_copy():
@@ -178,7 +180,7 @@ def test_draft_lock_has_exactly_one_definition():
     # 是正当的（本文件的注释就在讲这段历史），因注释误报的测试是坏测试。
     code = re.sub(r"/\*.*?\*/", "", src, flags=re.S)
     code = re.sub(r"^\s*//[^\n]*", "", code, flags=re.M)
-    expr = "S.sendPending||S.restoringSessions"
+    expr = "GoalQueue.draftPending()"
     assert code.count(expr) == 1, \
         f"判据被复制了 {code.count(expr)} 份；应当只在 draftLocked() 里出现一次"
     assert expr in predicate.group(1)
@@ -187,7 +189,7 @@ def test_draft_lock_has_exactly_one_definition():
     # 但也必须复用 locked）
     render = re.search(r"\nfunction renderAll\(\)\{(.*?)\n\}\n", src, re.S)
     assert render
-    hand = re.findall(r'\$\("#[\w-]+"\)\.disabled=(?!locked)', render.group(1))
+    hand = re.findall(r'\$\("#(?!new-btn)[\w-]+"\)\.disabled=(?!locked)', render.group(1))
     assert not hand, f"renderAll 里仍有 {len(hand)} 处绕过统一判据的 disabled 赋值"
 
 

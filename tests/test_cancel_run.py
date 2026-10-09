@@ -26,6 +26,7 @@ from http.server import ThreadingHTTPServer
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import serve
+from test_gate_serve import authorize_local_agents
 
 _GLOBALS = ("PORT", "MATRIX", "BOARD_PATH", "EVENTS_PATH", "WORKDIR", "DATA_DIR",
             "PROJECT", "RUNTIME_DIR", "RUNS_DIR", "INDEX_PATH", "CONFIG_PATH",
@@ -132,6 +133,7 @@ def test_cancel_kills_whole_process_tree():
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     try:
         serve._configure(tmp, "default", port)
+        authorize_local_agents()
         serve.MAIN_PATH = parent_script
 
         pid = serve._spawn_main(["--goal=cancel-test"])
@@ -200,6 +202,7 @@ def test_cancel_kills_descendant_that_started_its_own_process_group():
     child_pid = None
     try:
         serve._configure(tmp, "default", port)
+        authorize_local_agents()
         serve.MAIN_PATH = parent_script
         serve._spawn_main(["--goal=cancel-detached-test"])
         pid_path = os.path.join(hb, "child.pid")
@@ -293,6 +296,7 @@ def test_watch_run_cancel_flag_takes_priority_over_crash_detection():
     tmp = tempfile.mkdtemp(prefix="ah_watchcancel_")
     try:
         serve._configure(tmp, "default", 8787)
+        authorize_local_agents()
         serve._runs_add("r1", "cancel-me")
         events = os.path.join(serve.RUNS_DIR, "r1", "events.jsonl")
         os.makedirs(os.path.dirname(events), exist_ok=True)
@@ -310,6 +314,125 @@ def test_watch_run_cancel_flag_takes_priority_over_crash_detection():
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+def test_watch_run_does_not_duplicate_engine_run_cancelled():
+    """Bug B4 follow-up: a gate cancel both writes the reply (the engine may
+    see it and emit run_cancelled itself) and kills the tree (the watchdog
+    then records the cancellation). The stream must say it once, or the
+    chat shows the cancellation message twice."""
+    s = _snap()
+    tmp = tempfile.mkdtemp(prefix="ah_watchdup_")
+    try:
+        serve._configure(tmp, "default", 8787)
+        authorize_local_agents()
+        serve._runs_add("r1", "cancel-me")
+        events = os.path.join(serve.RUNS_DIR, "r1", "events.jsonl")
+        os.makedirs(os.path.dirname(events), exist_ok=True)
+        with open(events, "w", encoding="utf-8") as f:
+            f.write('{"ts": 1, "id": "a", "type": "run_cancelled", '
+                    '"reason": "task gate t1 rejected"}\n')
+        serve.EVENTS_PATH = events
+        serve._watch_run("r1", _FakeProc(-15), events, {"cancel_requested": True})
+        serve._runs_load()
+        assert serve._runs[0]["status"] == "cancelled", serve._runs
+        text = open(events, encoding="utf-8").read()
+        assert text.count('"type": "run_cancelled"') == 1, text
+    finally:
+        _restore(s)
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_watch_run_keeps_the_engines_own_crash_reason():
+    """Bug B11: when the engine already wrote run_crashed with the real
+    reason (e.g. planning failed) before exiting nonzero, the watchdog must
+    not append its generic "exited with code 1" -- the dashboard would show
+    that second, less useful message too."""
+    s = _snap()
+    tmp = tempfile.mkdtemp(prefix="ah_watchcrash2_")
+    try:
+        serve._configure(tmp, "default", 8787)
+        authorize_local_agents()
+        serve._runs_add("r1", "boom")
+        events = os.path.join(serve.RUNS_DIR, "r1", "events.jsonl")
+        os.makedirs(os.path.dirname(events), exist_ok=True)
+        with open(events, "w", encoding="utf-8") as f:
+            f.write('{"ts": 1, "id": "a", "type": "run_crashed", '
+                    '"error": "拆解任务失败：planning failed: bad json"}\n')
+        serve.EVENTS_PATH = events
+        serve._watch_run("r1", _FakeProc(1), events, {"cancel_requested": False})
+        serve._runs_load()
+        assert serve._runs[0]["status"] == "crashed", serve._runs
+        text = open(events, encoding="utf-8").read()
+        assert text.count('"type": "run_crashed"') == 1, text
+    finally:
+        _restore(s)
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_rerun_attempt_still_gets_its_own_terminal_event():
+    """Guard for the dedupe above: POST /rerun appends to the SAME
+    events.jsonl, so the previous attempt's run_cancelled / run_crashed /
+    run_finished sit in the tail. None of them may stand in for this
+    attempt's own ending, or the dashboard keeps showing the rerun as
+    running forever (the run_finished case was wrong even before the
+    dedupe: a crashed rerun was recorded with attempt 1's verdict)."""
+    import threading
+    import time
+
+    # (how attempt 1 ended, attempt 2 cancelled?, attempt 2 exit, index status,
+    #  event attempt 2 must add, expected count of that event type)
+    cases = (("run_cancelled", True, -15, "cancelled", "run_cancelled", 2),
+             ("run_crashed", False, 1, "crashed", "run_crashed", 2),
+             ("run_finished", False, 1, "crashed", "run_crashed", 1))
+    for prior, cancel, code, status, event_type, expected in cases:
+        s = _snap()
+        tmp = tempfile.mkdtemp(prefix="ah_rerun_terminal_")
+        release = threading.Event()
+
+        class P:
+            def __init__(self, argv, **kw):
+                self.pid = 1
+                self.returncode = None
+
+            def poll(self):
+                return self.returncode
+
+            def wait(self):
+                release.wait(5)
+                self.returncode = code
+                return code
+
+        orig_popen = serve.subprocess.Popen
+        try:
+            serve._configure(tmp, "default", 8787)
+            authorize_local_agents()
+            serve._runs_add("aaaa0001", "goal")
+            run_dir = os.path.join(serve.RUNS_DIR, "aaaa0001")
+            os.makedirs(run_dir, exist_ok=True)
+            events = os.path.join(run_dir, "events.jsonl")
+            with open(events, "w", encoding="utf-8") as f:   # attempt 1 ended this way
+                f.write('{"ts": 1, "id": "a", "type": "plan_created", "tasks": []}\n'
+                        f'{{"ts": 2, "id": "b", "type": "{prior}", "error": "old", '
+                        '"statuses": {"t1": "done"}}\n')
+            serve._adopt_latest_run()
+            serve.subprocess.Popen = P
+            serve._spawn_main(["--resume"])                   # attempt 2, same files
+            serve._run_meta["cancel_flag"]["cancel_requested"] = cancel
+            release.set()
+            deadline = time.monotonic() + 5
+            while serve._runs[-1].get("status") != status and time.monotonic() < deadline:
+                time.sleep(0.05)
+            text = open(events, encoding="utf-8").read()
+            assert text.count(f'"type": "{event_type}"') == expected, \
+                f"after a {prior} attempt, attempt 2's {event_type} was swallowed:\n{text}"
+            assert serve._runs[-1].get("status") == status, (prior, serve._runs[-1])
+        finally:
+            release.set()
+            serve.subprocess.Popen = orig_popen
+            _restore(s)
+            shutil.rmtree(tmp, ignore_errors=True)
+    print("PASS: test_rerun_attempt_still_gets_its_own_terminal_event")
+
+
 def test_watch_run_without_cancel_flag_still_detects_real_crash():
     """Regression guard: adding cancel_flag must not weaken the existing
     crash detection for a run nobody asked to cancel."""
@@ -317,6 +440,7 @@ def test_watch_run_without_cancel_flag_still_detects_real_crash():
     tmp = tempfile.mkdtemp(prefix="ah_watchcrash_")
     try:
         serve._configure(tmp, "default", 8787)
+        authorize_local_agents()
         serve._runs_add("r1", "boom")
         events = os.path.join(serve.RUNS_DIR, "r1", "events.jsonl")
         os.makedirs(os.path.dirname(events), exist_ok=True)
@@ -339,5 +463,8 @@ if __name__ == "__main__":
     test_cancel_without_running_returns_409()
     test_windows_cancel_does_not_hide_failed_taskkill()
     test_watch_run_cancel_flag_takes_priority_over_crash_detection()
+    test_watch_run_does_not_duplicate_engine_run_cancelled()
+    test_watch_run_keeps_the_engines_own_crash_reason()
+    test_rerun_attempt_still_gets_its_own_terminal_event()
     test_watch_run_without_cancel_flag_still_detects_real_crash()
     print("\nAll cancel-run tests passed.")
